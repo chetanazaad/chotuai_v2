@@ -1,0 +1,8 @@
+venv/
+.chotu/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+output.txt
+hello.py

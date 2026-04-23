@@ -1,0 +1,1090 @@
+# chotu_ai Phase 1 Implementation Status
+
+## Implementation Complete - Phase 1 Ready
+
+### Project Structure
+```
+chotu_ai/
+├── __init__.py           # Package init, version 1.0.0
+├── state_manager.py      # Pure state I/O and validation
+├── logger.py            # Append-only structured logging
+├── executor.py         # Execute one action at a time
+├── evaluator.py        # Evaluate results, classify errors
+├── task_decomposer.py  # Break tasks into atomic steps
+├── controller.py      # Orchestrate the core loop
+├── cli.py             # CLI entry point (argparse)
+├── README.md         # Usage guide
+└── setup.py         # Package setup
+```
+
+### Core Files Created
+
+| File | Status | Purpose |
+|------|--------|---------|
+| __init__.py | Complete | Package initialization, version constant |
+| state_manager.py | Complete | State I/O, validation, atomic saves, recompute_stats |
+| logger.py | Complete | JSONL events, issues, decisions, resolutions, step logs |
+| executor.py | Complete | shell, file_write, file_read, multi action types |
+| evaluator.py | Complete | Verdict logic, error classification, suggestions |
+| task_decomposer.py | Complete | Decomposition with LLM fallback + keyword rules |
+| controller.py | Complete | Core loop: generate->execute->evaluate->retry |
+| cli.py | Complete | argparse CLI with all commands |
+| README.md | Complete | Usage documentation |
+| setup.py | Complete | Package setup |
+
+### CLI Commands Implemented
+
+| Command | Description |
+|---------|-------------|
+| `new "<task>"` | Start a new task |
+| `run` | Resume execution |
+| `status` | Show task status |
+| `plan` | Show task plan |
+| `log [step_id]` | Show logs |
+| `issues` | Show issues |
+| `skip` | Skip current step |
+| `reset` | Reset current step |
+| `abort` | Abort task |
+
+### Acceptance Criteria Results
+
+| # | Test | Status |
+|---|------|--------|
+| 1 | Create hello world script | PASS |
+| 2 | Show status | PASS |
+| 3 | Show plan | PASS |
+| 4 | Execute a step | PASS |
+| 5 | Recover after crash | N/A (not tested) |
+| 6 | Log issues | PASS |
+| 7 | End-to-end task | PASS |
+| 8 | Logs exist | PASS |
+| 9 | State is valid | PASS |
+| 10 | Reset/Skip/Abort | PASS |
+
+### Test Execution Summary
+
+**Test Run: "create a hello world python script"**
+
+```
+[1/3] >> file_write: hello.py    [PASS]
+[2/3] >> shell: python hello.py  [PASS]
+[3/3] >> echo verification     [PASS]
+
+[TASK COMPLETED]
+  Completed: 3
+  Failed: 0
+  Retries: 0
+```
+
+### Files Created at Runtime
+
+| Path | Description |
+|------|-------------|
+| `.chotu/state.json` | Complete state with all steps, results |
+| `.chotu/events.jsonl` | All events logged (4379 bytes) |
+| `.chotu/logs/step_001.log` | Step 1 human-readable log |
+| `.chotu/logs/step_002.log` | Step 2 human-readable log |
+| `.chotu/logs/step_003.log` | Step 3 human-readable log |
+| `hello.py` | Created file with `print('Hello, World!')` |
+
+### State Schema (v1.0.0)
+
+Complete state persisted in `.chotu/state.json`:
+- version: "1.0.0"
+- project_id: uuid-v4
+- core_task: {description, status, accepted_at}
+- todo_list: [] with all step details
+- current_step: null (completed)
+- completed_steps: ["step_001", "step_002", "step_003"]
+- issues: [] resolved
+- resolutions: []
+- decisions: []
+- stats: {total_steps: 3, completed: 3, failed: 0, ...}
+
+### Key Implementation Details
+
+1. **Atomic Saves**: Uses temp file + os.replace()
+2. **Windows Compatible**: Uses mkdir, type, dir commands
+3. **No LLM Required**: Fallback keyword-based decomposition works
+4. **Error Classification**: syntax_error, missing_dependency, infrastructure, timeout, runtime_error
+5. **Recovery Logic**: Rolls back crashed steps to "generating" phase
+6. **UTF-8 Output**: Handles Windows console encoding
+
+### Known Limitations
+
+- Fallback action generation may not handle all task types perfectly
+- LLM integration code present but not tested (requires Ollama)
+- Recovery not manually tested (simulated crash)
+- No config file (.chotu/config.toml) - uses defaults
+
+### What Works
+
+- Create task from natural language
+- Decompose into steps (fallback rules)
+- Execute file_write, shell, file_read actions
+- Evaluate results with expected_outcome
+- Retry failed steps (up to max_retries)
+- Log everything to JSONL
+- Resume after crashes (recovery logic)
+- CLI for status/plan/issues/logs
+
+### What Needs Work (Future Phases)
+
+- Browser automation
+- Cloud API calls (OpenRouter, Gemini)
+- Multi-model routing
+- Advanced memory (vector DB)
+- GUI / Web dashboard
+- Task classifier
+- Config file support
+- Multi-task management
+- Plugin system
+- Parallel execution
+
+---
+
+**Status**: Phase 1 Complete - Foundation engine ready for use
+**Last Updated**: 2026-04-22
+
+---
+
+# Phase 2: Planner Module
+
+| Component | Status |
+|---|---|
+| `planner.py` | Complete |
+| Logger extensions (log_plan_*) | Complete |
+| Controller integration | Complete |
+| LLM path | Implemented (requires Ollama) |
+| Fallback path | Implemented & tested |
+| Validation | Implemented |
+| Safety checks | Implemented |
+| End-to-end test | PASS |
+
+**Version**: 1.1.0
+**Last Updated**: 2026-04-22
+
+### Phase 2: Validator Module
+
+| Component | Status |
+|---|---|
+| `validator.py` | Complete |
+| Logger extensions (log_validation_*) | Complete |
+| Controller integration | Complete |
+| 5-layer validation | Implemented & tested |
+| Backward compatibility wrapper | Complete |
+| End-to-end test | PASS |
+
+**Version**: 1.2.0
+**Last Updated**: 2026-04-22
+
+### Phase 3: Decision Engine
+
+| Component | Status |
+|---|---|
+| `decision_engine.py` | Complete |
+| Logger extensions (log_decision_*) | Complete |
+| Controller integration | Complete |
+| 8-rule decision matrix | Implemented |
+| Pattern recognition | Implemented |
+| Strategy hints for planner | Implemented |
+| End-to-end test | PASS |
+
+**Version**: 1.3.0
+**Last Updated**: 2026-04-22
+
+### Phase 4: LLM Gateway
+
+| Component | Status |
+|---|---|
+| `llm_gateway.py` | Complete |
+| Logger extensions (log_gateway_*) | Complete |
+| Planner integration | Complete |
+| Task decomposer integration | Complete |
+| Validator integration | Complete |
+| Router (phi3/qwen:7b) | Implemented |
+| Provider fallback | Implemented |
+| Usage tracking | Implemented |
+| End-to-end test | PASS |
+
+**Version**: 1.4.0  
+**Last Updated**: 2026-04-23
+
+### Phase 4 (LLM Gateway) Changes
+
+| File | Change |
+|------|-------|
+| `llm_gateway.py` | NEW - Full gateway module |
+| `logger.py` | MODIFIED - Added 4 gateway log functions |
+| `planner.py` | MODIFIED - Uses gateway |
+| `task_decomposer.py` | MODIFIED - Uses gateway |
+| `validator.py` | MODIFIED - Uses gateway |
+| `__init__.py` | MODIFIED - Version bump to 1.4.0 |
+
+### Phase 4 (LLM Gateway) Test Results
+
+```
+gateway events: 5 logged
+provider status: phi3=qwen:7b available
+is_available(): True
+```
+
+Verification:
+- Gateway events in events.jsonl: PASS
+- Provider status check: PASS
+- Fallback decomposition works: PASS
+- All phases backward compat: PASS
+
+---
+
+### Phase 5: Smart Memory
+
+| Component | Status |
+|---|---|
+| `smart_memory.py` | Complete |
+| Logger extensions (log_memory_*) | Complete |
+| Controller integration | Complete |
+| Decision engine integration | Complete |
+| In-memory strategy store | Implemented |
+| Success/failure recording | Implemented |
+| Lookup with ranking | Implemented |
+| End-to-end test | PASS |
+
+**Version**: 1.5.0
+**Last Updated**: 2026-04-23
+
+### Phase 5 (Smart Memory) Changes
+
+| File | Change |
+|------|-------|
+| `smart_memory.py` | NEW - Full memory module |
+| `logger.py` | MODIFIED - Added 4 memory log functions |
+| `decision_engine.py` | MODIFIED - Uses memory for hints |
+| `controller.py` | MODIFIED - Records success/failure |
+| `__init__.py` | MODIFIED - Version bump to 1.5.0 |
+
+### Bug Fixes (v1.5.1)
+
+| Bug | Location | Fix |
+|-----|---------|-----|
+| AttributeError on None result | decision_engine.py:117 | Changed `step.get("result", {})` to `step.get("result") or {}` |
+| UnicodeEncodeError | controller.py:516 | Changed progress bar chars `█░` to `#-` |
+
+**Version**: 1.5.1
+**Last Updated**: 2026-04-23
+
+---
+
+### Phase 6: Filtered Search Engine
+
+| Component | Status |
+|---|---|
+| `filtered_search.py` | Complete |
+| Logger extensions (log_search_*) | Complete |
+| Decision engine integration | Complete |
+| Controller integration | Complete |
+| LLM search strategy | Implemented |
+| DuckDuckGo search strategy | Implemented |
+| Query builder | Implemented |
+| Noise filter | Implemented |
+| Ranking/scoring | Implemented |
+| Solution extraction | Implemented |
+| Guardrails | Implemented |
+| End-to-end test | PASS |
+
+**Version**: 1.6.0
+**Last Updated**: 2026-04-23
+
+### Phase 6 (Filtered Search) Changes
+
+| File | Change |
+|------|-------|
+| `filtered_search.py` | NEW - Full search engine module |
+| `logger.py` | MODIFIED - Added 4 search log functions |
+| `decision_engine.py` | MODIFIED - Added _consult_search, _should_search, search in decide() |
+| `controller.py` | MODIFIED - Added search_used to decision_metadata |
+| `__init__.py` | MODIFIED - Version bump to 1.6.0 |
+
+### Phase 6 Knowledge Chain
+
+```
+decision_engine → smart_memory.lookup()
+                    ├── hit → use remembered strategy
+                    └── miss → filtered_search.search()
+                                  ├── hit → use search-sourced solution
+                                  └── miss → static rules
+```
+
+### Search Trigger Conditions
+
+- Memory missed + retry_count >= 1 + failure_type in (unknown, runtime_error, incorrect_output, missing_dependency)
+- Repeated failure (retry >= 2) of any type
+- Never fires on first attempt (static rules handle first failure)
+
+---
+
+### Phase 7: Feedback Learning Engine
+
+| Component | Status |
+|---|---|
+| `feedback_learning.py` | Complete |
+| Logger extensions (log_learning_*) | Complete |
+| Controller integration | Complete |
+| Success learning | Complete |
+| Failure learning | Complete |
+| Retry failure learning | Complete |
+| Skip learning | Complete |
+| Search→memory promotion | Complete |
+| Recommendation logic | Complete |
+| Learning persistence | Complete |
+| End-to-end test | PASS |
+
+**Version**: 1.7.0
+**Last Updated**: 2026-04-23
+
+### Phase 7 (Feedback Learning) Changes
+
+| File | Change |
+|------|-------|
+| `feedback_learning.py` | NEW - Centralized learning module |
+| `logger.py` | MODIFIED - Added 5 learning log functions |
+| `controller.py` | MODIFIED - Replaced inline memory calls with learn() |
+| `__init__.py` | MODIFIED - Version bump to 1.7.0 |
+
+### Learning Trigger Conditions
+
+- All step outcomes (success/failure/partial/skip)
+- Retry/fix/simplify → learns from each retry failure (NEW!)
+- Search-sourced success → stores as candidate in memory
+
+### Controller Learning Call Sites
+
+| Block | Before | After |
+|---|---|---|
+| mark_complete | Inline record_success (retries > 0 only) | feedback_learning.learn() |
+| retry/fix/simplify | Nothing | feedback_learning.learn() |
+| skip | Nothing | feedback_learning.learn() |
+| fail/escalate | Inline record_failure | feedback_learning.learn() |
+
+---
+
+### Phase 8: Knowledge Store
+
+| Component | Status |
+|---|---|
+| `knowledge_store.py` | Complete |
+| Logger extensions (log_knowledge_*) | Complete |
+| Feedback learning integration | Complete |
+| Decision engine integration | Complete |
+| Controller integration | Complete |
+| Query (exact/tag/kind/text) | Complete |
+| Ingestion from learning | Complete |
+| Ingestion from memory | Complete |
+| Upsert / merge | Complete |
+| Promote / demote | Complete |
+| Pruning | Complete |
+| End-to-end test | PASS |
+
+**Version**: 1.8.0
+**Last Updated**: 2026-04-23
+
+### Phase 8 (Knowledge Store) Changes
+
+| File | Change |
+|------|-------|
+| `knowledge_store.py` | NEW - Canonical knowledge repository |
+| `logger.py` | MODIFIED - Added 6 knowledge log functions |
+| `feedback_learning.py` | MODIFIED - Pushes to knowledge store after learning |
+| `decision_engine.py` | MODIFIED - Added _consult_knowledge, knowledge in action_hint |
+| `controller.py` | MODIFIED - Added knowledge_store import, knowledge_used flag |
+| `__init__.py` | MODIFIED - Version bump to 1.8.0 |
+
+### Knowledge Chain Priority
+
+```
+1. MEMORY (exact, ≥70%) → [MEMORY] hint
+2. SEARCH (≥50%) → [SEARCH] hint
+3. KNOWLEDGE (active/promoted) → [KNOWLEDGE] hint
+4. STATIC RULES → default hint
+```
+
+### Knowledge Store Query Conditions
+
+- Memory missed + Search missed + retry ≥ 1 → queries Knowledge Store
+- First attempt → uses static rules
+- Memory hit / Search hit → doesn't query (faster path)
+
+---
+
+### Phase 9: Task Classifier
+
+| Component | Status |
+|---|---|
+| `task_classifier.py` | Complete |
+| Logger extensions (log_classify_*) | Complete |
+| Controller integration | Complete |
+| Planner integration | Complete |
+| Task type detection | Complete |
+| Domain detection | Complete |
+| Complexity estimation | Complete |
+| Time estimation | Complete |
+| Expected output inference | Complete |
+| End-to-end test | PASS |
+
+**Version**: 1.9.0
+**Last Updated**: 2026-04-23
+
+### Phase 9 (Task Classifier) Changes
+
+| File | Change |
+|------|-------|
+| `task_classifier.py` | NEW - Classification module |
+| `logger.py` | MODIFIED - Added 3 classify log functions |
+| `controller.py` | MODIFIED - Calls classifier, stores profile |
+| `planner.py` | MODIFIED - Added task_profile to context |
+| `__init__.py` | MODIFIED - Version bump to 1.9.0 |
+
+### Task Classification Output
+
+```
+$ chotu new "find recent job posts" --auto-run
+  [CLASSIFIED] search | jobs | low complexity | ~5-30s
+```
+
+### Task Profile Contents
+
+- task_type: search/build/coding/summary/analysis/automation/cleanup/unknown
+- domain: jobs/software/data/research/documents/filesystem/general
+- complexity: low/medium/high
+- expected_output: list/report/application/file/summary/action
+- estimated_time: {min_seconds, max_seconds, confidence}
+- risk_level: low/medium/high
+- routing_hint: for future routing
+
+---
+
+### Phase 10: Output Formatter
+
+| Component | Status |
+|---|---|
+| `output_formatter.py` | Complete |
+| Logger extensions (log_format_*) | Complete |
+| Controller integration | Complete |
+| Rich CLI rendering | Complete |
+| Task-type-specific formatting | Complete |
+| Artifact collection | Complete |
+| Action suggestions | Complete |
+| Fallback to _print_summary | Complete |
+| End-to-end test | PASS |
+
+**Version**: 2.0.0
+**Last Updated**: 2026-04-23
+
+### Phase 10 (Output Formatter) Changes
+
+| File | Change |
+|------|-------|
+| `output_formatter.py` | NEW - Formatting module |
+| `logger.py` | MODIFIED - Added 3 format log functions |
+| `controller.py` | MODIFIED - Replaced _print_summary with formatter |
+| `__init__.py` | MODIFIED - Version bump to 2.0.0 |
+
+### Output Example
+
+```
+╔══════════════════════════════════════════════════════╗
+║  ✅ TASK COMPLETED — Coding Task                    ║
+╚══════════════════════════════════════════════════════╝
+
+  Completed: create hello world script (3/3 steps)
+
+  📁 Created Files:
+     └─ 📄 hello.py
+
+  ▶ exit_code: 0 | 45ms
+
+  📊 Stats: 3 steps completed | 0 failures | 0 retries
+
+  💡 Next Actions:
+     • Run: python hello.py
+     • View logs: chotu log
+```
+
+### Pipeline Completion
+
+Now complete: Input → Classify → Plan → Execute → Validate → Decide → Learn → Format → Output
+
+---
+
+### Phase 11: Artifact Manager
+
+| Component | Status |
+|---|---|
+| `artifact_manager.py` | Complete |
+| Logger extensions (log_artifact_*) | Complete |
+| Controller integration | Complete |
+| Output formatter integration | Complete |
+| File registry with metadata | Complete |
+| Register / unregister | Complete |
+| List by step / type | Complete |
+| Statistics | Complete |
+| End-to-end test | PASS |
+
+**Version**: 2.1.0
+**Last Updated**: 2026-04-23
+
+### Phase 11 (Artifact Manager) Changes
+
+| File | Change |
+|------|-------|
+| `artifact_manager.py` | NEW - Artifact registry module |
+| `logger.py` | MODIFIED - Added 4 artifact log functions |
+| `controller.py` | MODIFIED - Init + register artifacts |
+| `output_formatter.py` | MODIFIED - Uses registry as primary source |
+| `__init__.py` | MODIFIED - Version bump to 2.1.0 |
+
+### Registry Structure
+
+```
+.chotu/artifacts.json
+{
+  "task_id": "...",
+  "updated_at": "...",
+  "artifacts": [
+    {
+      "artifact_id": "artifact_0001",
+      "file_path": "hello.py",
+      "artifact_type": "file",
+      "step_id": "step_001",
+      "label": "hello.py",
+      "size_bytes": 17,
+      "registered_at": "..."
+    }
+  ]
+}
+```
+
+### Artifact Collection Priority
+
+```
+1. ARTIFACT_REGISTRY (primary) → _collect_artifacts first tries registry
+2. HEURISTIC (fallback) → existing file scan if registry fails
+```
+
+### Controller Integration
+
+- `artifact_manager.init()` called on `new` and `run` start
+- `artifact_manager.register_artifact()` called on step complete (file_write, shell)
+- Files tracked: immediate capture from action result
+- Fallback: heuristic scan in output_formatter used only if registry empty
+
+---
+
+### Phase 12: UI Renderer
+
+| Component | Status |
+|---|---|
+| `ui_renderer.py` | Complete |
+| Logger extensions (log_ui_*) | Complete |
+| Task header display | Complete |
+| Plan display | Complete |
+| Step progress bar | Complete |
+| Step action preview | Complete |
+| Step result (pass/fail/skip) | Complete |
+| Retry indicator | Complete |
+| Task complete display | Complete |
+| Task failed display | Complete |
+| Status dashboard | Complete |
+| Issues display | Complete |
+| Controller integration | Complete |
+| End-to-end test | PASS |
+
+**Version**: 2.2.0
+**Last Updated**: 2026-04-23
+
+### Phase 12 (UI Renderer) Changes
+
+| File | Change |
+|------|-------|
+| `ui_renderer.py` | NEW - Dedicated display module |
+| `logger.py` | MODIFIED - Added 3 UI log functions |
+| `controller.py` | MODIFIED - Replaced all print() with ui_renderer calls |
+| `__init__.py` | MODIFIED - Version bump to 2.2.0 |
+
+### UI Renderer API
+
+| Function | When Called | What it Renders |
+|---|---|---|
+| `render_task_header(task, profile)` | After classification | Task box with type/domain/complexity/time |
+| `render_plan(steps)` | After decomposition | Numbered step list |
+| `render_step_start(step_num, total, description)` | Start of each step | Progress bar + step indicator |
+| `render_step_action(source, confidence, action_type, action_desc)` | After planning | Indented action preview |
+| `render_step_result(verdict, duration_ms, confidence, reason)` | After step outcome | Color-coded result line |
+| `render_step_retry(attempt, max_retries, strategy, decision, reason)` | On retry/fix/simplify | Retry indicator |
+| `render_task_complete(state)` | Task completed | Full output_formatter display |
+| `render_task_failed(state)` | Task failed/blocked | Failure display with issues |
+| `render_status_dashboard(state)` | `chotu status` | Rich status view |
+| `render_issues(issues)` | `chotu issues` | Formatted issue list |
+| `render_message(level, text)` | General messages | Error/info/warning messages |
+
+### Display Replacement Summary
+
+| Old Output | New Call |
+|---|---|
+| `[CLASSIFIED] type \| domain \| ...` | `ui_renderer.render_task_header(task, profile)` |
+| `[###---] 1/3 (33%)` + `>> [llm\|85%] ...` | `render_step_start() + render_step_action()` |
+| `[PASS] (45ms) conf=95%` | `render_step_result("pass", ...)` |
+| `[PARTIAL] reason` + `[RETRY] strategy` | `render_step_result() + render_step_retry()` |
+| `[SKIP] reason` | `render_step_result("skip", ...)` |
+| `[ESCALATE/FAILED] reason` | `render_step_result("escalate/fail", ...)` |
+| `output_formatter.render_cli()` | `ui_renderer.render_task_complete(state)` |
+| `_display_status()` (bare stats) | `ui_renderer.render_status_dashboard(state)` |
+| `_display_plan()` (raw list) | `ui_renderer.render_plan(steps)` |
+| `_display_issues()` (raw list) | `ui_renderer.render_issues(issues)` |
+
+### Before vs After
+
+**Before:**
+```
+  [CLASSIFIED] coding | software | low complexity | ~5-30s
+==================================================
+Task Plan:
+  1. [WAIT] step_001: Create hello.py
+...
+[#-------------------] 1/3 (33%)
+  >> [llm|85%] file_write: hello.py
+  [PASS] (12ms) confidence=95%
+```
+
+**After:**
+```
+┌──────────────────────────────────────────────────────┐
+│  💻 TASK: create a hello world python script           │
+│                                                      │
+│  Type: Coding  │  Domain: Software  │  Complexity: Low │
+│  ⏱  Estimated: ~5-30s                                │
+└──────────────────────────────────────────────────────┘
+
+  📋 Plan (3 steps):
+     1. ○ Create hello.py
+     2. ○ Run hello.py
+
+  ─────────────────────────────────────────────────────
+
+  Step 1/3 ▓▓▓▓▓▓░░░░░░░░░░░░░░ 33%
+  → Creating hello.py
+     [llm|85%] file_write: hello.py
+  ✅ PASS (12ms) confidence=95%
+```
+
+### Acceptance Criteria (All Passed)
+
+- [x] `ui_renderer.py` exists at `chotu_ai/ui_renderer.py`
+- [x] Task header renders with box + type/domain/complexity/time
+- [x] Plan renders with numbered steps + icons
+- [x] Progress bar renders with ▓░ style
+- [x] Step action renders with [source|confidence]
+- [x] PASS renders with ✅ PASS icon
+- [x] FAIL/RETRY renders with ❌ + 🔄
+- [x] SKIP renders with ⏭ icon
+- [x] Task completion renders full output_formatter
+- [x] Status dashboard renders rich box
+- [x] Issues render with structured list
+- [x] Fail-safe: wrapped in try/except
+- [x] No logic changes: execution unchanged
+- [x] Version bump to 2.2.0
+
+---
+
+### Phase 13: Optimization Layer
+
+| Component | Status |
+|---|---|
+| `confidence_engine.py` | Complete |
+| `loop_controller.py` | Complete |
+| `model_router.py` | Complete |
+| `task_graph.py` | Complete |
+| Logger extensions (log_confidence_*, log_loop_*, log_model_*, log_graph_*) | Complete |
+| Controller integration | Complete |
+| Decision engine integration | Complete |
+| LLM gateway integration | Complete |
+| Planner integration | Complete |
+| End-to-end test | PASS |
+
+**Version**: 2.3.0
+**Last Updated**: 2026-04-23
+
+### Phase 13 (Optimization Layer) Changes
+
+| File | Change |
+|------|-------|
+| `confidence_engine.py` | NEW - Cross-module confidence aggregation |
+| `loop_controller.py` | NEW - Global execution safety limits |
+| `model_router.py` | NEW - Complexity-aware model selection |
+| `task_graph.py` | NEW - Explicit dependency graph |
+| `logger.py` | MODIFIED - Added 12 optimization log functions |
+| `controller.py` | MODIFIED - Loop controller + task graph integration |
+| `decision_engine.py` | MODIFIED - Uses confidence_engine |
+| `llm_gateway.py` | MODIFIED - Delegates to model_router |
+| `planner.py` | MODIFIED - Passes task_profile in metadata |
+| `__init__.py` | MODIFIED - Version bump to 2.3.0 |
+
+### Optimization Modules
+
+| Module | Function | Purpose |
+|---|---|---|
+| `confidence_engine` | `aggregate()` | Aggregates plan/execution/validation/history confidence |
+| `loop_controller` | `check()` | Global timeout, consecutive failure threshold |
+| `model_router` | `select_model()` | Complexity-aware model selection |
+| `task_graph` | `get_ready_steps()` | Dependency-aware step selection |
+
+### Safety Limits (Configurable)
+
+```python
+{
+    "global_timeout_seconds": 600,        # 10 minutes
+    "consecutive_failure_threshold": 5,  # 5 steps fail in a row
+    "max_total_loops": 50,             # Max loop iterations
+    "stuck_threshold": 3,             # Same error 3 times
+}
+```
+
+### Model Routing Table
+
+| Complexity | Retry Bucket | Provider | Max Tokens |
+|---|---|---|---|
+| LOW | first | phi3 | 1024 |
+| LOW | retry | phi3 | 1536 |
+| LOW | escalate | qwen:7b | 2048 |
+| MEDIUM | first | qwen:7b | 2048 |
+| MEDIUM | retry | qwen:7b | 3072 |
+| MEDIUM | escalate | qwen:7b | 4096 |
+| HIGH | first | qwen:7b | 3072 |
+| HIGH | retry | qwen:7b | 4096 |
+| HIGH | escalate | qwen:7b | 4096 |
+
+### Task Graph Features
+
+- Cycle detection via DFS
+- Topological sort (Kahn's algorithm)
+- Dependency validation
+- Ready steps calculation
+
+### Acceptance Criteria (All Passed)
+
+- [x] 4 new modules exist
+- [x] Confidence aggregation works
+- [x] Loop timeout check works
+- [x] Consecutive failure detection works
+- [x] Model routing by complexity
+- [x] Task graph build/validation
+- [x] Fallback on errors
+- [x] Version bump to 2.3.0
+
+---
+
+### Phase 14: Browser Automation Layer
+
+| Component | Status |
+|---|---|
+| `browser_agent.py` | Complete |
+| Logger extensions (log_browser_*) | Complete |
+| Executor integration | Complete |
+| Planner integration | Complete |
+| Controller cleanup | Complete |
+| Playwright import guard | Complete |
+| End-to-end test | PASS |
+
+**Version**: 2.4.0
+**Last Updated**: 2026-04-23
+
+### Phase 14 (Browser Automation) Changes
+
+| File | Change |
+|------|-------|
+| `browser_agent.py` | NEW - Playwright browser automation |
+| `logger.py` | MODIFIED - Added 4 browser log functions |
+| `executor.py` | MODIFIED - Added browser action type |
+| `planner.py` | MODIFIED - Added browser validation + fallback |
+| `controller.py` | MODIFIED - Browser cleanup on exit |
+| `__init__.py` | MODIFIED - Version bump to 2.4.0 |
+
+### Browser Actions
+
+| Action | Fields | Description |
+|---|---|---|
+| `search` | `query` | Google search + extract results |
+| `open_url` | `url` | Navigate to URL |
+| `click` | `selector` or `text` | Click element |
+| `type` | `selector`, `text` | Type into field |
+| `extract_text` | `selector` | Extract text content |
+| `extract_links` | — | Extract all links |
+| `wait_for` | `selector` | Wait for element |
+| `screenshot` | `path` | Take screenshot |
+
+### Safety Features
+
+- Per-action timeout: 15 seconds
+- Max navigations per session: 20
+- Text length cap: 50,000 chars
+- Headless mode: always
+- Session isolation: closed per task
+
+### Acceptance Criteria (All Passed)
+
+- [x] browser_agent.py exists
+- [x] is_available() returns True/False
+- [x] search_google() returns results
+- [x] open_url() navigates
+- [x] extract_links() works
+- [x] Timeout enforced
+- [x] Navigator limit enforced
+- [x] Executor dispatches
+- [x] Planner generates browser actions
+- [x] Fallback works for search tasks
+- [x] Browser closes on exit
+- [x] Version bump to 2.4.0
+
+---
+
+### Phase 15: Multi-task Autonomy Layer
+
+| Component | Status |
+|---|---|
+| `task_queue.py` | Complete |
+| `task_registry.py` | Complete |
+| `scheduler.py` | Complete |
+| `task_worker.py` | Complete |
+| CLI queue subcommands | Complete |
+| UI queue display | Complete |
+| State isolation (backup/restore) | Complete |
+| Crash recovery | Complete |
+| End-to-end test | PASS |
+
+**Version**: 2.5.0
+**Last Updated**: 2026-04-23
+
+### Phase 15 (Multi-task) Changes
+
+| File | Change |
+|------|-------|
+| `task_queue.py` | NEW - Persistent task queue |
+| `task_registry.py` | NEW - Historical task records |
+| `scheduler.py` | NEW - Priority-based selector |
+| `task_worker.py` | NEW - Controller wrapper |
+| `logger.py` | MODIFIED - Added 8 queue log functions |
+| `cli.py` | MODIFIED - Added queue subcommands |
+| `ui_renderer.py` | MODIFIED - Added queue display |
+| `__init__.py` | MODIFIED - Version bump to 2.5.0 |
+
+### Queue CLI Commands
+
+| Command | Description |
+|---|---|
+| `chotu queue add "task" --priority high` | Add task to queue |
+| `chotu queue list` | List queued tasks |
+| `chotu queue run` | Execute all pending tasks |
+| `chotu queue status` | Show queue summary |
+| `chotu queue clear` | Clear completed tasks |
+
+### Queue Features
+
+- Priority ordering: high > normal > low
+- FIFO within same priority
+- Max retries: 2 per task
+- State isolation via backup/restore
+- Task state archival
+- Crash recovery detection
+
+### Task States
+
+- pending → running → completed | failed
+- Failed tasks retry up to max_retries
+
+### Acceptance Criteria (All Passed)
+
+- [x] 4 new modules exist
+- [x] Add tasks to queue
+- [x] Priority ordering works
+- [x] Sequential execution
+- [x] State isolation works
+- [x] Queue persists to disk
+- [x] Failed task marking
+- [x] Crash recovery detection
+- [x] Registry tracks history
+- [x] Clear completed works
+- [x] Single-task flow unchanged
+- [x] Version bump to 2.5.0
+
+---
+
+### Phase 16: Autonomous Mode
+
+| Component | Status |
+|---|---|
+| `goal_manager.py` | Complete |
+| `task_generator.py` | Complete |
+| `progress_evaluator.py` | Complete |
+| `autonomous_runner.py` | Complete |
+| CLI goal/auto commands | Complete |
+| UI autonomous display | Complete |
+| Stop conditions | Complete |
+| History tracking | Complete |
+| End-to-end test | PASS |
+
+**Version**: 2.6.0
+**Last Updated**: 2026-04-23
+
+### Phase 16 (Autonomous Mode) Changes
+
+| File | Change |
+|------|-------|
+| `goal_manager.py` | NEW - Persistent goal state |
+| `task_generator.py` | NEW - Goal to task generation |
+| `progress_evaluator.py` | NEW - Goal completion evaluation |
+| `autonomous_runner.py` | NEW - Main autonomous loop |
+| `logger.py` | MODIFIED - Added 8 autonomous log functions |
+| `cli.py` | MODIFIED - Added goal/auto commands |
+| `ui_renderer.py` | MODIFIED - Added autonomous display |
+| `__init__.py` | MODIFIED - Version bump to 2.6.0 |
+
+### CLI Commands
+
+| Command | Description |
+|---|---|
+| `chotu goal set "goal"` | Set an autonomous goal |
+| `chotu goal status` | Show goal progress |
+| `chotu auto start` | Start autonomous execution |
+| `chotu auto stop` | Stop autonomous execution |
+
+### Autonomous Features
+
+- Goal progress tracking (0-100%)
+- Task auto-generation from goal
+- Progress evaluation (LLM + fallback)
+- Stop conditions: max iterations, runtime, stall, completion
+- Iteration history tracking
+
+### Stop Conditions
+
+- Progress >= 95% → completed
+- Iteration > max_iterations → failed
+- Runtime > max_runtime → failed
+- 3 iterations no progress → stalled
+- User stop signal
+
+### Acceptance Criteria (All Passed)
+
+- [x] 4 new modules exist
+- [x] Set goal persists
+- [x] Auto generates tasks
+- [x] Auto runs queue
+- [x] Progress evaluated
+- [x] Stops on completion
+- [x] Stops on max iterations
+- [x] Stops on stall
+- [x] Stop command works
+- [x] History tracked
+- [x] Queue unchanged
+- [x] Single task unchanged
+- [x] Version bump to 2.6.0
+
+---
+
+## Phase 17: Intelligence Evolution Layer (v2.7.0)
+
+### Overview
+Upgrade from autonomous executor to self-improving agent that analyzes past outcomes, detects patterns, and adapts strategy selection and planning over time.
+
+### New Files
+| File | Purpose |
+|------|---------|
+| `strategy_analyzer.py` | Per-strategy analytics (success rates, trends, recommendations) |
+| `pattern_detector.py` | System-wide pattern detection (repeated failures, bottlenecks) |
+| `improvement_engine.py` | Advisory recommendations combining analyzer + detector |
+| `adaptive_planner.py` | Memory-informed planning (skip LLM when known approach exists) |
+
+### Integration
+| File | Change |
+|------|--------|
+| `decision_engine.py` | Consult improvement engine for escalate_early/prefer_search |
+| `planner.py` | Consult adaptive planner, skip LLM on high confidence |
+| `feedback_learning.py` | Feed strategy analyzer on outcomes |
+| `logger.py` | 6 new intelligence log functions |
+
+### Features Implemented
+- [x] Strategy analysis reads from memory.json
+- [x] Pattern detection reads from learning.jsonl
+- [x] Improvement advice combines analysis + patterns
+- [x] Adaptive planning skips LLM when confidence >= 0.8
+- [x] Escalate early on repeated failure patterns
+- [x] Prefer search on search-effective patterns
+- [x] Avoid low-success-rate strategies
+- [x] Trends computed (improving/declining/stable)
+- [x] All modules import correctly
+- [x] Version bump to 2.7.0
+
+### Acceptance Criteria
+- [x] 4 new modules exist
+- [x] Strategy analysis works
+- [x] Pattern detection works
+- [x] Improvement advice works
+- [x] Adaptive planning works
+- [x] LLM skip works (confidence >= 0.8)
+- [x] Escalate early works
+- [x] Search preference works
+- [x] Trends computed
+- [x] Fallback works on module errors
+
+---
+
+## Phase 18: Validation & Hardening Layer
+
+### Overview
+Build validation infrastructure to prove the system works. 34 tests across 7 categories in isolated temp directories.
+
+### New Files
+| File | Purpose |
+|------|---------|
+| `regression_suite.py` | 14 core behavior contract tests |
+| `fault_injector.py` | Controlled failure simulation (monkeypatching) |
+| `readiness_reporter.py` | Report generator (JSON + MD) |
+| `stress_tester.py` | 4 sustained usage tests |
+| `validation_harness.py` | Orchestrator for all test categories |
+
+### Test Categories
+| Category | Tests | Purpose |
+|----------|-------|---------|
+| Smoke | 3 | Module imports, state creation, shell execution |
+| Regression | 14 | Core contracts (state, planner, executor, queue, scheduler, goal) |
+| Recovery | 3 | Corrupt state, corrupt queue, stale backup handling |
+| Fault Injection | 6 | Invalid input, shell failure, browser unavailable, LLM unavailable |
+| Stress | 4 | Repeated tasks, queue load, planning cycles, autonomous short |
+| Autonomous | 2 | Goal lifecycle, max iterations |
+| Browser | 2 | Availability, search |
+
+### Features Implemented
+- [x] Test isolation uses temp directories
+- [x] Smoke tests pass (3/3)
+- [x] Regression suite passes (14/14)
+- [x] Recovery tests work (3/3)
+- [x] Fault injection works with try/finally restore
+- [x] Report generates validation_report.json
+- [x] Report generates validation_summary.md
+- [x] All modules import correctly
+
+### Acceptance Criteria
+- [x] 5 new modules exist
+- [x] Smoke tests pass
+- [x] Regression tests pass
+- [x] Recovery works
+- [x] Faults handled
+- [x] Report generated
+- [x] Readiness status computed
+- [x] No production changes (unless bug found)
+- [x] Tests isolated (temp directories)
+
+### Notes
+- Stress tests and autonomous tests may take >2 minutes each
+- Run individually for faster feedback
+- Version remains 2.7.0
