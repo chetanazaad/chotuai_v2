@@ -26,9 +26,12 @@ def main():
 
     subparsers.add_parser("status", help="Show task status")
 
+    subparsers.add_parser("cache", help="LLM cache stats")
+
     subparsers.add_parser("plan", help="Show task plan")
 
     log_parser = subparsers.add_parser("log", help="Show logs")
+    log_parser.add_argument("task_id", nargs="?", default=None, help="Task ID (optional)")
     log_parser.add_argument("step_id", nargs="?", default=None, help="Step ID (optional)")
 
     subparsers.add_parser("issues", help="Show issues")
@@ -72,6 +75,13 @@ def main():
     auto_sub.add_parser("start", help="Start autonomous execution")
     auto_sub.add_parser("stop", help="Stop autonomous execution")
 
+    subparsers.add_parser("clean", help="System cleanup engine")
+    
+    subparsers.add_parser("tasks", help="List all tasks")
+    
+    open_parser = subparsers.add_parser("open", help="Open task folder")
+    open_parser.add_argument("task_id", type=str, help="Task index or ID")
+
     args = parser.parse_args()
     command = args.command
 
@@ -80,9 +90,15 @@ def main():
         "working_dir": getattr(args, "working_dir", None),
         "auto_run": getattr(args, "auto_run", False),
         "step_id": getattr(args, "step_id", None),
+        "task_id": getattr(args, "task_id", None),
     }
 
     try:
+        if command == "status":
+            from . import llm_gateway
+            llm_gateway.check_llm_status()
+            sys.exit(0)
+        
         if command == "queue":
             from . import task_queue, task_registry, logger, ui_renderer
             queue_cmd = args.queue_command
@@ -156,6 +172,8 @@ def main():
         success = controller.handle_command(command, args_dict)
         sys.exit(0 if success else 1)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Error: {e}")
         sys.exit(1)
 

@@ -50,6 +50,9 @@ def validate(exec_result, expected_outcome, step: dict, state: dict) -> Validati
     working_dir = state.get("config", {}).get("working_directory", "")
 
     action = step.get("action", {})
+    if not isinstance(action, dict):
+        action = {"type": "unknown", "command": str(action)}
+
     if action.get("type") == "file_write":
         expected_outcome = {
             "type": "file_exists",
@@ -64,6 +67,13 @@ def validate(exec_result, expected_outcome, step: dict, state: dict) -> Validati
         return hard_result
 
     checks = _check_expected_outcome(exec_result, expected_outcome, working_dir)
+
+    task_profile = state.get("core_task", {}).get("task_profile", {})
+    task_type = task_profile.get("task_type", "") if isinstance(task_profile, dict) else getattr(task_profile, "task_type", "")
+    if task_type == "build" and action.get("type") == "shell":
+        cmd = action.get("command", "").strip()
+        if cmd.startswith("echo ") and ">" not in cmd:
+            checks.append({"check": "real_execution", "passed": False, "detail": "Echo commands without redirection are not valid execution for build tasks"})
 
     failure_type = "none"
     if exec_result.exit_code != 0:
@@ -162,12 +172,24 @@ def _check_expected_outcome(exec_result, expected_outcome, working_dir) -> list:
     """Layer 2: Expected outcome checks."""
     checks = []
 
-    if expected_outcome is None:
+    if expected_outcome is None or expected_outcome == "":
         checks.append({
             "check": "exit_code_zero",
             "passed": exec_result.exit_code == 0,
             "detail": f"exit_code={exec_result.exit_code}"
         })
+        
+        # STRICT VALIDATION: Build tasks shouldn't just pass with exit 0 on empty outcomes
+        # if there wasn't a tangible output
+        # (This prevents fake success)
+        command = exec_result.stdout.strip()
+        if "Step step_" in command and "completed" in command:
+             checks.append({
+                 "check": "real_execution",
+                 "passed": False,
+                 "detail": "Fake success detected"
+             })
+             
         return checks
 
     if isinstance(expected_outcome, str):

@@ -1,18 +1,195 @@
-# chotu_ai Phase 1 Implementation Status
+# chotu_ai System Status
 
-## Implementation Complete - Phase 1 Ready
+## Current Version: 2.9.2 | Last Updated: 2026-04-25
 
-### Project Structure
+### Quick Summary
+- 42 modules, ~12,800 lines
+- **Hybrid Planning System** (Base plan + LLM refinement)
+- **Desktop GUI** (Tkinter application)
+- **LLM Response Cache** (FIFO 100 entries)
+- **Output directory: output/** (Unified)
+- Non-blocking LLM (5s timeout)
+- Full safety controls
+- Real-time execution visibility
+
+### Key Commands
+| Command | Description |
+|---------|-------------|
+| `chotu new "<task>"` | Start task |
+| `chotu run` | Resume |
+| `chotu status` | Check status |
+| `chotu cache` | LLM cache stats |
+| `chotu log <task_id>` | View task log |
+
+### What's Working
+- **Desktop GUI** (`python ui_app.py`)
+  - Dark theme Tkinter application
+  - Live output streaming with color-coded logs
+  - Progress bar and step tracker
+  - Past tasks dropdown
+  - Action buttons: Open Output, View Logs, Stop, Clear
+- **LLM Performance Layer**
+  - Response cache (FIFO 100 entries)
+  - Adaptive timeouts: phi3=5s, qwen:7b=10s
+  - Model load caching (60s TTL)
+  - Fast fail: switches model on timeout
+  - Prompt compression (2000 char limit)
+- **Real-Time Visibility**
+  - `log_visibility()` to `.chotu/logs/<task_id>.log`
+  - `[STEP START/DONE]` progress bars
+  - `[ACTION]`, `[ERROR]`, `[RECOVERY]` logs
+  - Task summary with LLM call counts
+- **Hybrid Planning**: Base plan + optional LLM refinement
+- **Unified output/ directory**
+
+### Known Issues
+- Model loading 3-5s per request
+- LLM refinement can timeout
+
+---
+
+### Version History
+
+| Version | Phase | Date | Key Changes |
+|---------|-------|------|-------------|
+| 1.0.0 | 1 | 2026-04-22 | Foundation engine |
+| 1.1.0-2.6.0 | 2-17 | 2026-04-23 | Core modules |
+| 2.7.0-2.7.4 | 18-22 | 2026-04-23 | Intelligence + Safety |
+| 2.7.5-2.7.8 | 23-26 | 2026-04-24 | Execution Safety |
+| 2.7.9 | 28 | 2026-04-24 | Non-blocking LLM |
+| 2.8.0 | 29 | 2026-04-24 | LLM Status Check |
+| 2.8.1 | 30 | 2026-04-24 | Output Directory |
+| 2.8.5 | 31 | 2026-04-24 | **Hybrid Planning** |
+| 2.9.0 | 36 | 2026-04-25 | LLM Performance Layer |
+| 2.9.1 | 37 | 2026-04-25 | Real-Time Visibility |
+| 2.9.2 | 38 | 2026-04-25 | **Desktop GUI** |
+
+---
+
+### Phase 31: Hybrid Planning System
+
+**Overview**: Combined system reliability with LLM intelligence for task decomposition. LLM refines base plan but never breaks it.
+
+**Changes**:
+| File | Change |
+|------|-------|
+| `task_decomposer.py` | Added `_generate_base_plan()`, `_refine_plan_with_llm()`, `_validate_refined_plan()` |
+
+**Implementation**:
+
+Phase 1 - Generate Base Plan:
+```python
+def _generate_base_plan(core_task: str, task_lower: str) -> list:
+    # website templates (student/news/business/default)
+    # system/project (5 steps)
+    # api (4 steps)
+    # calculator (4 steps)
 ```
-chotu_ai/
-├── __init__.py           # Package init, version 1.0.0
-├── state_manager.py      # Pure state I/O and validation
-├── logger.py            # Append-only structured logging
-├── executor.py         # Execute one action at a time
-├── evaluator.py        # Evaluate results, classify errors
-├── task_decomposer.py  # Break tasks into atomic steps
-├── controller.py      # Orchestrate the core loop
-├── cli.py             # CLI entry point (argparse)
+
+Phase 2 - LLM Refinement:
+```python
+def _refine_plan_with_llm(base_plan, core_task, context):
+    # Prompt: "DO NOT remove any existing files from the base plan"
+    # Only refine descriptions or add new steps
+```
+
+Phase 3 - Validation:
+```python
+def _validate_refined_plan(base_plan, refined_plan):
+    # Reject if len(refined) < len(base)
+    # Reject if any base files are missing
+```
+
+**Test Output**:
+```
+=== Website ===
+[DECOMPOSER] Base plan generated: 5 steps
+[LLM] attempt start
+[LLM] Sending request to Ollama...
+[INFRA] LLM call failed: timed out
+[DECOMPOSER] LLM refinement failed - using base plan
+5 steps
+step_001 output/index.html
+step_002 output/page1.html
+step_003 output/page2.html
+step_004 output/page3.html
+```
+
+**Results**:
+- [x] Base plan generation for website/system/api/calculator
+- [x] Website templates (student/news/business)
+- [x] LLM refinement attempt with 5s timeout
+- [x] Validation fallback when LLM fails
+- [x] Output directory integration
+
+---
+
+### Phase 30: Unified Output Directory
+
+All generated files now stored in single "output/" folder.
+
+**Changes**: `_WORKSPACE_DIR = "output"` in executor.py
+
+---
+
+### Phase 29: LLM Status Check System
+
+`chotu status` command shows full LLM checklist.
+
+---
+
+### Phase 27-28: Non-Blocking LLM
+
+5-second timeout, single attempt.
+
+---
+
+### Phase 23-26: Execution Safety
+
+File system sanity, strict action contract, infrastructure stability.
+
+---
+
+**Status**: Operational
+**Version**: 2.9.2
+**Last Updated**: 2026-04-25
+- Desktop GUI available (`python ui_app.py`)
+- Real-time execution visibility
+
+### Phase 30: Unified Output Directory Control
+
+### Overview
+All generated files now stored in single "output/" folder. Old workspace/tmp folders cleaned.
+
+### Changes
+| File | Change |
+|------|-------|
+| `executor.py` | Changed _WORKSPACE_DIR from "workspace" to "output" |
+
+### Implementation
+```python
+_WORKSPACE_DIR = "output"
+_FORBIDDEN_EXTENSIONS = [".sh", ".bash", ".exe", ".bat", ".cmd"]
+_ALLOWED_EXTENSIONS = [".py", ".html", ".txt", ".json", ".md", ".css", ".js"]
+```
+
+### Debug Logs
+```
+[OUTPUT CONTROL] output/ directory ready
+[OUTPUT CONTROL] Path enforced: output/test.html
+```
+
+### Results
+- [x] Files saved to output/ only
+- [x] Old workspace/ cleaned
+- [x] Path enforcement logging
+- [x] File type validation
+
+---
+
+**Status**: Complete
+**Version**: 2.8.1
+**Last Updated**: 2026-04-24
 ├── README.md         # Usage guide
 └── setup.py         # Package setup
 ```
@@ -1088,3 +1265,416 @@ Build validation infrastructure to prove the system works. 34 tests across 7 cat
 - Stress tests and autonomous tests may take >2 minutes each
 - Run individually for faster feedback
 - Version remains 2.7.0
+
+---
+
+## Phase 19: LLM Enforcement Layer
+
+### Overview
+Enforce LLM usage for high complexity tasks by removing preemptive bypass. Debug logging added to track LLM usage vs fallback decisions.
+
+### Changes
+| File | Change |
+|------|-------|
+| `task_decomposer.py` | Added debug logging, stricter LLM result validation |
+| `planner.py` | Added debug logging for LLM path, fallback logging |
+
+### Implementation Details
+
+1. **task_decomposer.py**:
+   - Added `[PLANNER] Using LLM for task decomposition` debug log before LLM call
+   - Modified `decompose()` to validate result is non-empty list before returning
+   - Falls back only when LLM explicitly fails
+
+2. **planner.py**:
+   - Added `[PLANNER] Using LLM for task planning` debug log before LLM call
+   - Added `[fallback] LLM failed` info log when exception occurs
+
+### Verification
+```
+events.jsonl line 10: "event_type": "debug", "message": "[PLANNER] Using LLM for task decomposition"
+events.jsonl line 13: "event_type": "gateway_failure", "message": "Gateway failed: qwen:7b — timed out"
+```
+
+This confirms:
+- LLM is prioritized for high complexity tasks (not low/simple)
+- Debug logging shows LLM is being called
+- Fallback activates only after LLM explicitly fails
+
+### Execution Ratio
+Before: `[fallback|...]` (preemptive)
+After: `[llm|...]` → `[fallback]` only on explicit failure
+
+---
+
+## Full System Overview (v2.7.1)
+
+### System Statistics
+
+| Metric | Value |
+|--------|-------|
+| Total Modules | 41 |
+| Total Lines | 11,452 |
+| Total Functions | 511 |
+| Total Classes | 32 |
+| Version | 2.7.1 |
+
+### Module Inventory
+
+| Module | Lines | Functions | Classes | Purpose |
+|-------|-------|----------|---------|---------|
+| logger | 809 | 109 | 0 | Append-only structured logging |
+| controller | 637 | 16 | 0 | Core execution loop |
+| decision_engine | 561 | 18 | 1 | 8-rule decision matrix |
+| planner | 526 | 12 | 1 | Action planning |
+| filtered_search | 482 | 20 | 4 | DuckDuckGo + LLM search |
+| knowledge_store | 481 | 24 | 1 | Canonical knowledge repository |
+| smart_memory | 475 | 19 | 1 | In-memory strategy store |
+| validator | 456 | 13 | 1 | 5-layer validation |
+| llm_gateway | 434 | 16 | 2 | Multi-provider LLM routing |
+| ui_renderer | 426 | 16 | 0 | Rich CLI rendering |
+| browser_agent | 382 | 17 | 1 | Playwright automation |
+| feedback_learning | 369 | 14 | 2 | Success/failure learning |
+| validation_harness | 368 | 21 | 0 | Test orchestrator |
+| output_formatter | 354 | 17 | 2 | Task-type formatting |
+| task_classifier | 289 | 15 | 1 | Task type/domain/complexity |
+| executor | 282 | 6 | 1 | Action execution |
+| regression_suite | 271 | 16 | 1 | Core behavior tests |
+| task_decomposer | 268 | 8 | 0 | Task decomposition |
+| pattern_detector | 262 | 9 | 1 | System-wide pattern detection |
+| strategy_analyzer | 219 | 6 | 2 | Per-strategy analytics |
+| autonomous_runner | 217 | 3 | 0 | Autonomous execution loop |
+| task_worker | 211 | 5 | 0 | Controller wrapper |
+| artifact_manager | 195 | 20 | 1 | File registry |
+| progress_evaluator | 186 | 4 | 1 | Goal completion evaluation |
+| state_manager | 170 | 8 | 0 | State I/O |
+| task_queue | 167 | 9 | 0 | Persistent queue |
+| cli | 164 | 1 | 0 | CLI entry point |
+| evaluator | 163 | 3 | 1 | Result evaluation |
+| task_generator | 159 | 5 | 0 | Goal to task generation |
+| goal_manager | 158 | 10 | 0 | Goal state management |
+| task_graph | 157 | 9 | 1 | Dependency graph |
+| stress_tester | 155 | 6 | 0 | Sustained usage tests |
+| improvement_engine | 150 | 2 | 1 | Advisory recommendations |
+| readiness_reporter | 140 | 2 | 0 | Report generator |
+| task_registry | 122 | 7 | 0 | Historical task records |
+| loop_controller | 120 | 6 | 1 | Global safety limits |
+| adaptive_planner | 110 | 1 | 1 | Memory-informed planning |
+| fault_injector | 108 | 11 | 0 | Controlled failure simulation |
+| confidence_engine | 99 | 4 | 1 | Confidence aggregation |
+| model_router | 86 | 2 | 1 | Complexity-aware model selection |
+| scheduler | 64 | 1 | 1 | Priority-based selector |
+
+### Execution Pipeline
+
+```
+Input → Classifier → Planner → Executor → Validator → Decision → Learn → Format → Output
+         ↓           ↓         ↓         ↓          ↓        ↓       ↓
+    task_profile  task_type  action   result    errors   hints   artifacts  UI
+```
+
+### Intelligence Chain
+
+```
+1. ADAPTIVE_PLANNER (confidence ≥ 0.8) → known approach
+2. MEMORY (exact, ≥70%) → remembered strategy
+3. SEARCH (≥50%) → web search results  
+4. KNOWLEDGE (active/promoted) → knowledge store
+5. STATIC_RULES → default fallback
+```
+
+### Quality Assurance
+
+| Test Category | Status |
+|------------|--------|
+| Smoke | PASS (3/3) |
+| Regression | PASS (14/14) |
+| Recovery | PASS (3/3) |
+| Fault Injection | PASS (6/6) |
+| Stress | Pass (4/4) |
+| Autonomous | Pass (2/2) |
+| Browser | Pass (2/2) |
+
+### Phase History
+
+| Phase | Name | Version | Status |
+|-------|------|--------|--------|
+| 1 | Foundation Engine | 1.0.0 | Complete |
+| 2 | Planner Module | 1.1.0 | Complete |
+| 3 | Validator Module | 1.2.0 | Complete |
+| 4 | Decision Engine | 1.3.0 | Complete |
+| 5 | LLM Gateway | 1.4.0 | Complete |
+| 6 | Smart Memory | 1.5.0 | Complete |
+| 7 | Filtered Search | 1.6.0 | Complete |
+| 8 | Feedback Learning | 1.7.0 | Complete |
+| 9 | Knowledge Store | 1.8.0 | Complete |
+| 10 | Task Classifier | 1.9.0 | Complete |
+| 11 | Output Formatter | 2.0.0 | Complete |
+| 12 | Artifact Manager | 2.1.0 | Complete |
+| 13 | UI Renderer | 2.2.0 | Complete |
+| 14 | Optimization Layer | 2.3.0 | Complete |
+| 15 | Browser Automation | 2.4.0 | Complete |
+| 16 | Multi-task | 2.5.0 | Complete |
+| 17 | Autonomous Mode | 2.6.0 | Complete |
+| 18 | Intelligence Evolution | 2.7.0 | Complete |
+| 19 | Validation & Hardening | 2.7.0 | Complete |
+| 20 | LLM Enforcement | 2.7.1 | Complete |
+
+### What's Working
+
+- Natural language task input
+- Task classification (type/domain/complexity)
+- Task decomposition (LLM + fallback)
+- Action planning (LLM + adaptive + fallback)
+- Multi-provider LLM routing (phi3, qwen:7b)
+- File operations (read/write)
+- Shell command execution
+- Playwright browser automation
+- 5-layer validation
+- 8-rule decision matrix
+- Multi-model routing
+- Strategy memory
+- Web search with filtering
+- Knowledge store with query
+- Success/failure learning
+- Confidence aggregation
+- Global safety limits
+- Task queue with priority
+- Autonomous execution
+- Goal progress tracking
+- Rich CLI output
+- Crash recovery
+
+### Phase 29: LLM Status Check System
+
+### Overview
+Added comprehensive LLM status checklist before execution.
+
+### Changes
+| File | Change |
+|------|-------|
+| `llm_gateway.py` | Added check_llm_status() |
+| `cli.py` | Integrated status command |
+
+### Implementation
+```python
+def check_llm_status() -> dict:
+    status = {
+        "ollama_running": False,
+        "api_reachable": False,
+        "phi3_available": False,
+        "qwen_available": False,
+        "phi3_loaded": False,
+        "qwen_loaded": False,
+        "llm_working": False,
+    }
+```
+
+### CLI Output
+```
+$ chotu status
+
+[LLM STATUS CHECK]
+  [X] Ollama running
+  [X] phi3 installed
+  [X] qwen:7b installed
+  [X] phi3 loaded
+  [X] qwen:7b loaded
+  [X] LLM responding
+  [=] LLM READY
+```
+
+### Results
+- [x] Full LLM visibility
+- [x] CLI integration
+- [x] Model loading status
+- [x] API health check
+
+---
+
+**Status**: Complete
+**Version**: 2.8.0
+**Last Updated**: 2026-04-24---
+
+## Phase 30: Hybrid Routing & Reliability (v2.8.1)
+
+### Overview
+Transitioned to a hybrid model routing strategy to balance speed and intelligence.
+
+### Changes
+- **model_router.py**: Implemented complexity-aware routing.
+- **llm_gateway.py**: Integrated auto-start for Ollama and model validation.
+
+### Features
+- [x] Use `phi3` for low/medium complexity first attempts.
+- [x] Escalate to `qwen:7b` on medium/high complexity retries.
+- [x] Auto-start Ollama service if down.
+- [x] Auto-load models if not in memory.
+
+---
+
+## Phase 31: Strict Output Control (v2.8.2)
+
+### Overview
+Hardened the LLM gateway to prevent invalid or inconsistent outputs from breaking the execution loop.
+
+### Changes
+- **llm_gateway.py**: Added response sanitization and strict JSON extraction.
+- **planner.py**: Added validation layer for action structures.
+
+### Features
+- [x] Automatic stripping of markdown fences (```json).
+- [x] Fallback to raw text extraction if JSON parsing fails.
+- [x] Blockage of unsafe shell patterns (bash, /usr/bin).
+- [x] Forced Windows PowerShell compatibility.
+
+---
+
+## Phase 32: Task-Action Control Layer (v2.8.3)
+
+### Overview
+Shifted decision-making for action types from the LLM to the system. The LLM now acts strictly as a content provider.
+
+### Changes
+- **planner.py**: Implemented `forced_action` logic based on task keywords.
+- **planner.py**: Refactored prompt to request ONLY content (code/commands).
+- **planner.py**: Implemented aggressive extraction for payloads.
+
+### Features
+- [x] Keywords `html` -> `file_write` to `workspace/output.html`.
+- [x] Keywords `python`/`script` -> `file_write` to `workspace/script.py`.
+- [x] Keywords `run` -> `shell` (blocked for build tasks).
+- [x] Blocked all shell actions for `Build` type tasks for safety.
+
+---
+
+## Phase 33: Workspace Sanitization (v2.8.3)
+
+### Overview
+Automated environment cleanup to prevent artifact leakage between tasks.
+
+### Changes
+- **controller.py**: Implemented `_cleanup_workspace()` and integrated into `_run_new`.
+
+### Features
+- [x] Purge `workspace/*` and `tmp/*` before every new task.
+- [x] Remove stray `*.sh` files from project root.
+- [x] Ensures a fresh, deterministic environment for every execution.
+
+---
+
+**Status**: Operational - Hardened Control Layer Active
+**Version**: 2.9.2
+**Last Updated**: 2026-04-25
+---
+
+## Phase 34: Structured Task Decomposition (v2.8.4)
+
+### Overview
+Addressed the critical issue where complex tasks were being reduced to a single step. Implemented deterministic rules for task decomposition.
+
+### Changes
+- **task_decomposer.py**: Implemented complex task detection and keyword-based multi-step planning.
+- **planner.py**: Added Step -> File mapping for multi-page website tasks.
+- **controller.py**: Added multi-file validation to ensure execution integrity for complex tasks.
+
+### Features
+- [x] Detect keywords `multiple`, `website`, `pages`, `system`, `project`.
+- [x] Override LLM for "website" tasks with a 5-step plan.
+- [x] Map index, article, and contact steps to correct filenames.
+- [x] Fail task if fewer than 3 HTML files are generated for a multi-page request.
+
+---
+
+**Status**: Operational - Hardened Control Layer Active
+**Version**: 2.8.4
+**Last Updated**: 2026-04-24
+---
+
+## Phase 35: Cross-File Consistency & Output Hardening (v2.8.5)
+
+### Overview
+Hardened the output directory structure and implemented a system-level consistency engine for multi-file tasks. Fixed critical regressions in path enforcement.
+
+### Changes
+- **executor.py**: Unified all output to `output/` directory.
+- **state_manager.py**: Moved internal task/shared state to `output/`.
+- **task_decomposer.py**: Updated expected outcomes to use `output/`.
+- **planner.py**: Implemented `HEADER`, `FOOTER`, and `STYLE` templates.
+- **planner.py**: Implemented **File Update Mode** to preserve layouts during content updates.
+- **controller.py**: Added strict validation against `workspace/` creation and `output.html`.
+
+### Features
+- [x] Forced `output/` directory (Zero tolerance for `workspace/`).
+- [x] System-level layout injection (Header/Footer/CSS).
+- [x] Delta updates for existing files (preserve layout, update content).
+- [x] Multi-file consistency validation.
+
+---
+
+## Phase 36: LLM Performance & Stability Layer (v2.9.0)
+
+### Overview
+Eliminated LLM latency bottlenecks with caching, adaptive timeouts, and model load optimization.
+
+### Changes
+| File | Change |
+|------|-------|
+| `llm_cache.py` | **[NEW]** — Response cache with FIFO at 100 entries |
+| `llm_gateway.py` | Cache integration, adaptive timeouts, model load caching, fast fail, prompt compression |
+| `cli.py` | Added `cache` command |
+| `controller.py` | Added `cache` command handler |
+
+### Features
+- [x] Response cache (FIFO 100 entries, `.chotu/llm_cache.json`)
+- [x] Adaptive timeouts: phi3=5s, qwen:7b=10s
+- [x] Model load caching (60s TTL)
+- [x] Fast fail: switches model on timeout
+- [x] Prompt compression (2000 char limit)
+
+---
+
+## Phase 37: Real-Time Execution Visibility (v2.9.1)
+
+### Overview
+Made the system fully transparent with real-time logs, progress bars, and task-specific log files.
+
+### Changes
+| File | Change |
+|------|-------|
+| `logger.py` | Added `log_visibility(task_id, message)` |
+| `controller.py` | Added `[STEP START]`, `[ACTION]`, `[STEP DONE]`, `[ERROR]`, `[RECOVERY]` logs |
+| `llm_gateway.py` | Added `[LLM] using model:` print |
+
+### Features
+- [x] Real-time visibility logs to `.chotu/logs/<task_id>.log`
+- [x] Progress bar: `[STEP START] Step X/Y ████████░░ 80%`
+- [x] Action logging: `[ACTION] file_write → index.html`
+- [x] Error visibility: `[ERROR] Step failed → ...`
+- [x] Task summary with LLM call counts
+
+---
+
+## Phase 38: Desktop GUI (v2.9.2)
+
+### Overview
+Built a standalone Tkinter desktop application for controlling chotu_ai without a terminal.
+
+### Changes
+| File | Change |
+|------|-------|
+| `ui_app.py` | **[NEW]** — Tkinter desktop GUI application |
+
+### Features
+- [x] Dark theme matching chotu_ai aesthetic
+- [x] Task input with past tasks dropdown
+- [x] Live output streaming with color-coded logs
+- [x] Progress bar and step tracker
+- [x] Action buttons: Open Output, View Logs, Stop, Clear
+- [x] Thread-safe subprocess execution
+
+---
+
+**Status**: Operational - Desktop GUI Active
+**Version**: 2.9.2
+**Last Updated**: 2026-04-25

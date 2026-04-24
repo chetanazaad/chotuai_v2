@@ -208,7 +208,18 @@ def _assess_severity(failure_type: str, val_result) -> str:
 
 def _check_retry_limit(step: dict, state: dict) -> dict:
     current = step.get("retries", 0)
-    max_retries = step.get("max_retries", 3)
+    
+    task_profile = state.get("core_task", {}).get("task_profile", {})
+    is_simple = False
+    if isinstance(task_profile, dict):
+        is_simple = task_profile.get("complexity") == "low" and task_profile.get("domain") == "filesystem"
+    else:
+        is_simple = getattr(task_profile, "complexity", "") == "low" and getattr(task_profile, "domain", "") == "filesystem"
+        
+    if is_simple:
+        max_retries = 1
+    else:
+        max_retries = step.get("max_retries", 3)
     config = state.get("config", {})
     total_retries = state.get("stats", {}).get("total_retries", 0)
     max_total = config.get("max_total_retries", 15)
@@ -239,6 +250,17 @@ def _choose_strategy(analysis: dict, step: dict, state: dict, retry_info: dict) 
 
     if exhausted:
         return ("fail", "fail_exhausted")
+
+    task_profile = state.get("core_task", {}).get("task_profile", {})
+    complexity = task_profile.get("complexity", "") if isinstance(task_profile, dict) else getattr(task_profile, "complexity", "")
+    
+    action = step.get("action", {})
+    if not isinstance(action, dict):
+        action = {"type": "unknown", "command": str(action)}
+    is_dummy_echo = action.get("type") == "shell" and action.get("command", "").strip().startswith("echo ")
+    
+    if complexity == "high" and is_dummy_echo and (ft == "incorrect_output" or is_partial or not retryable):
+        return ("escalate_later", "needs_stronger_model")
 
     advice = analysis.get("improvement_advice", {})
     if advice.get("escalate_early") and retry_count >= 1 and not exhausted:

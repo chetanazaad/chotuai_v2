@@ -2,6 +2,11 @@
 import dataclasses
 from typing import Optional
 
+# --- SAFE MODE OVERRIDE ---
+# Set to True for low-VRAM systems that cannot handle qwen:7b reliably
+# Set to False to restore original intelligent routing
+SAFE_MODE = False
+
 
 @dataclasses.dataclass
 class RoutingDecision:
@@ -34,50 +39,66 @@ def select_model(purpose: str = "",
                task_profile: dict = None,
                retry_count: int = 0,
                confidence: float = 1.0,
-               escalation_level: int = 0) -> RoutingDecision:
+               escalation_level: int = 0,
+               failure_type: str = None) -> RoutingDecision:
     """Select the best model based on task complexity, confidence, and retry state."""
     task_profile = task_profile or {}
     complexity = task_profile.get("complexity", "medium")
 
-    if retry_count == 0:
-        retry_bucket = "first"
-    elif retry_count <= 2:
-        retry_bucket = "retry"
-    else:
-        retry_bucket = "escalate"
+    # --- SAFE MODE OVERRIDE ---
+    if SAFE_MODE:
+        print(f"[MODEL ROUTER] SAFE MODE ACTIVE -> Using phi3 for {complexity} task")
+        return RoutingDecision(
+            provider="phi3",
+            model="phi3",
+            reason="safe_mode_override",
+            escalated=False,
+            max_tokens=1024,
+            temperature=0.1,
+        )
 
-    if confidence < 0.4 and retry_bucket == "retry":
-        retry_bucket = "escalate"
-
-    if escalation_level >= 2:
-        retry_bucket = "escalate"
-
-    if purpose in ("planning", "debugging", "reasoning"):
-        complexity = max(complexity, "medium")
-
-    key = (complexity, retry_bucket)
-    config = _ROUTING_TABLE.get(key, _ROUTING_TABLE[("medium", "first")])
-
-    provider = config["provider"]
-    escalated = retry_bucket == "escalate" and retry_count > 0
-
-    reason = (
-        f"complexity={complexity} retry={retry_count} "
-        f"confidence={confidence:.2f} bucket={retry_bucket}"
-    )
-
+    # --- HYBRID ROUTING LOGIC ---
+    model = "phi3"
+    
+    # --- LOW COMPLEXITY ---
+    if complexity == "low":
+        model = "phi3"
+    
+    # --- MEDIUM COMPLEXITY ---
+    elif complexity == "medium":
+        if retry_count == 0:
+            model = "phi3"
+        else:
+            model = "qwen:7b"
+    
+    # --- HIGH COMPLEXITY ---
+    elif complexity == "high":
+        if retry_count == 0:
+            model = "phi3"
+        else:
+            model = "qwen:7b"
+    
+    # --- FAILURE ESCALATION ---
+    if failure_type in ["invalid_action", "bad_output"]:
+        model = "qwen:7b"
+        
+    print(f"[MODEL ROUTER] complexity={complexity} retry={retry_count} → {model}")
+    
+    escalated = (model == "qwen:7b" and retry_count > 0)
+    reason = f"complexity={complexity} retry={retry_count}"
+    
     _routing_stats["total"] += 1
-    _routing_stats["by_provider"][provider] = _routing_stats["by_provider"].get(provider, 0) + 1
+    _routing_stats["by_provider"][model] = _routing_stats["by_provider"].get(model, 0) + 1
     if escalated:
         _routing_stats["escalations"] += 1
 
     return RoutingDecision(
-        provider=provider,
-        model=provider,
+        provider=model,
+        model=model,
         reason=reason,
         escalated=escalated,
-        max_tokens=config["max_tokens"],
-        temperature=config["temp"],
+        max_tokens=4096 if model == "qwen:7b" else 2048,
+        temperature=0.1 if retry_count == 0 else 0.2,
     )
 
 

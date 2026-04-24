@@ -807,3 +807,13 @@ def log_improvement_applied(step_id: str, change: str, reason: str) -> None:
     log_event("improvement_applied",
               f"Improvement applied to {step_id}: {change} — {reason[:80]}",
               {"step_id": step_id, "change": change, "reason": reason[:200]})
+
+
+def log_visibility(task_id: str, message: str) -> None:
+    """Append real-time visibility log to task-specific file."""
+    timestamp = _timestamp()
+    log_line = f"[{timestamp}] {message}\n"
+    log_file = _get_runtime_dir() / "logs" / f"{task_id}.log"
+    with _open_append(log_file):
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(log_line)

@@ -15,29 +15,51 @@ def get_runtime_dir(base_dir: Optional[Path] = None) -> Path:
 
 
 def ensure_runtime_dirs(base_dir: Optional[Path] = None) -> Path:
-    """Creates .chotu/, .chotu/logs/, workspace/tasks/, workspace/shared/"""
+    """Creates .chotu/, .chotu/logs/, output/tasks/, output/shared/"""
     runtime_dir = get_runtime_dir(base_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     (runtime_dir / "logs").mkdir(parents=True, exist_ok=True)
-    workspace_dir = base_dir / "workspace"
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    (workspace_dir / "tasks").mkdir(parents=True, exist_ok=True)
-    (workspace_dir / "shared").mkdir(parents=True, exist_ok=True)
+    output_dir = base_dir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "tasks").mkdir(parents=True, exist_ok=True)
+    (output_dir / "shared").mkdir(parents=True, exist_ok=True)
     return runtime_dir
+
+
+def sanitize_task_name(task_text: str) -> str:
+    """Sanitize task text for directory name (max 3 words)."""
+    import re
+    # Remove non-alphanumeric, keep spaces
+    clean = re.sub(r'[^a-zA-Z0-9\s]', '', task_text)
+    words = clean.split()[:3]
+    return "_".join(words).lower()
 
 
 def create_fresh_state(core_task: str, working_dir: Optional[str] = None) -> dict:
     """Factory for a brand-new state."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_str = now.isoformat()
+    
+    # STEP 2: GENERATE TASK ID
+    task_name = sanitize_task_name(core_task)
+    timestamp = now.strftime("%Y%m%d_%H%M")
+    task_id = f"{task_name}_{timestamp}"
+    
+    # STEP 3: DEFINE TASK DIRECTORY
+    output_root = "output"
+    task_output_dir = os.path.join(output_root, task_id)
+
     return {
         "version": "1.0.0",
         "project_id": str(uuid.uuid4()),
-        "created_at": now,
-        "updated_at": now,
+        "created_at": now_str,
+        "updated_at": now_str,
         "core_task": {
             "description": core_task,
             "status": "pending",
-            "accepted_at": None
+            "accepted_at": None,
+            "task_id": task_id,
+            "output_dir": task_output_dir
         },
         "todo_list": [],
         "current_step": None,
