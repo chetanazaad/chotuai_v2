@@ -21,6 +21,10 @@ def main():
     new_parser.add_argument("task", type=str, help="Task description")
     new_parser.add_argument("--working-dir", type=str, default=None, help="Working directory")
     new_parser.add_argument("--auto-run", action="store_true", help="Auto-run after creating task")
+    
+    append_parser = subparsers.add_parser("append", help="Append new steps to active task")
+    append_parser.add_argument("task", type=str, help="Additional task description")
+    append_parser.add_argument("--auto-run", action="store_true", help="Auto-run after appending task")
 
     subparsers.add_parser("run", help="Resume execution")
 

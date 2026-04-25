@@ -34,34 +34,6 @@ DANGEROUS_PATTERNS = [
     r"powershell.*-enc",
 ]
 
-
-# STEP 1: DEFINE GLOBAL TEMPLATES
-HEADER = """
-<header>
-  <h1>Tech News Portal</h1>
-  <nav>
-    <a href="index.html">Home</a>
-    <a href="article.html">Articles</a>
-    <a href="contact.html">Contact</a>
-  </nav>
-</header>
-"""
-
-FOOTER = """
-<footer>
-  <p>© 2026 Tech News Portal</p>
-</footer>
-"""
-
-STYLE = """
-<style>
-body { font-family: Arial; margin: 0; }
-header { background: #333; color: white; padding: 10px; }
-nav a { color: white; margin: 10px; text-decoration: none; }
-footer { background: #eee; padding: 10px; text-align: center; }
-</style>
-"""
-
 def plan(step: dict, state: dict, retry_context: Optional[dict] = None) -> PlanResult:
     """Main entry point. Returns a structured plan. Never raises."""
     from . import logger
@@ -146,26 +118,7 @@ def plan(step: dict, state: dict, retry_context: Optional[dict] = None) -> PlanR
                         else:
                             content = llm_content # Fallback
                     else:
-                        # STEP 4: SYSTEM BUILDS FINAL FILE
-                        final_content = f"""<html>
-<head>
-{STYLE}
-</head>
-<body>
-{HEADER}
-
-<div class="content">
-{llm_content}
-</div>
-
-{FOOTER}
-</body>
-</html>"""
-                        print(f"[OUTPUT FIX] Using output/ directory")
-                        print("[CONSISTENCY] Shared layout applied")
-                        print("[CONSISTENCY] Navbar injected")
-                        print("[CONSISTENCY] Styles unified")
-                        content = final_content
+                        content = llm_content
                 else:
                     content = llm_content
 

@@ -76,7 +76,8 @@ def validate_shell_command(command: str) -> tuple[bool, str]:
         "powershell.*-enc", "/bin/",
     ]
     for pattern in unsafe:
-        if re.search(pattern, cmd_lower):
+        # Use re.escape for literal matching of patterns like g++
+        if re.search(re.escape(pattern), cmd_lower):
             return False, f"unsafe_command:{pattern}"
 
     return True, None

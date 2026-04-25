@@ -166,8 +166,8 @@ def test_llm():
 _provider_cache = {}
 _CACHE_TTL_SECONDS = 30
 _MAX_PROMPT_LENGTH = 8000
-MAX_LLM_TIME = 5
-_TIMEOUT_MAP = {"phi3": 5, "qwen:7b": 10}
+MAX_LLM_TIME = 30
+_TIMEOUT_MAP = {"phi3": 30, "qwen:7b": 45}
 _consecutive_timeouts = 0
 
 _model_load_cache = {}
@@ -313,37 +313,34 @@ def generate(request: GatewayRequest) -> GatewayResponse:
     logger.log_gateway_start(request.purpose, provider_name)
 
     provider_config = _PROVIDERS[provider_name]
-    _ensure_model_loaded(provider_config["model"])
     
     from . import llm_cache
-    cached = llm_cache.get_cached(request.prompt)
-    if cached:
-        from . import logger
-        print(f"[LLM CACHE HIT]")
-        text = cached
-        structured, parsed = _parse_response(cached)
-        confidence = 0.9
-        response = GatewayResponse(
-            provider=provider_name,
-            model=provider_config["model"],
-            success=True,
-            confidence=confidence,
-            latency_ms=0,
-            tokens_used=len(cached.split()),
-            raw_output=cached,
-            text=cached,
-            structured=structured,
-            parsed=parsed,
-            fallback_used=False,
-            escalation_level=request.escalation_level,
-            error=""
-        )
-        return response
-    logger.log_gateway_start(request.purpose, provider_name)
-    print(f"[LLM] using model: {provider_config['model']}")
-    
-    provider_config = _PROVIDERS[provider_name]
-    _ensure_model_loaded(provider_config["model"])
+    use_cache = not request.retry_count > 0
+    if use_cache:
+        cached = llm_cache.get_cached(request.prompt)
+        if cached:
+            from . import logger
+            print(f"[LLM CACHE HIT]")
+            text = cached
+            structured, parsed = _parse_response(cached)
+            confidence = 0.9
+            response = GatewayResponse(
+                provider=provider_name,
+                model=provider_config["model"],
+                success=True,
+                confidence=confidence,
+                latency_ms=0,
+                tokens_used=len(cached.split()),
+                raw_output=cached,
+                text=cached,
+                structured=structured,
+                parsed=parsed,
+                fallback_used=False,
+                escalation_level=request.escalation_level,
+                error=""
+            )
+            return response
+        print(f"[LLM CALL START] using model: {provider_config['model']}")
 
     if not _check_provider(provider_name):
         alt_provider = "qwen:7b" if provider_name == "phi3" else "phi3"
@@ -355,7 +352,7 @@ def generate(request: GatewayRequest) -> GatewayResponse:
             logger.log_gateway_failure(request.purpose, "no_provider", "All local providers unavailable")
             return _build_unavailable_response("No local providers available")
 
-    provider_config = _PROVIDERS[provider_name]
+    print(f"[LLM CALL END]")
     try:
         raw_output, latency_ms, tokens_used = safe_llm_call(
             model=provider_config["model"],
@@ -432,6 +429,12 @@ def get_usage_stats() -> dict:
 
 def _select_provider(request: GatewayRequest) -> str:
     """Select provider. Delegates to model_router, falls back to built-in logic."""
+    import os
+    env_model = os.environ.get("CHOTU_MODEL")
+    if env_model in _PROVIDERS:
+        print(f"[LLM] Model override via CHOTU_MODEL: {env_model}")
+        return env_model
+
     if request.preferred_provider != "auto":
         if request.preferred_provider in _PROVIDERS:
             return request.preferred_provider
@@ -740,73 +743,11 @@ def _apply_guardrails(request: GatewayRequest) -> GatewayRequest:
     if request.metadata is None:
         request.metadata = {}
 
-    if len(request.prompt) > 2000:
-        request.prompt = request.prompt[:2000] + "\n[TRUNCATED]"
+    if len(request.prompt) > 6000:
+        request.prompt = request.prompt[:6000] + "\n[TRUNCATED]"
 
     request.temperature = 0.2
-
     request.max_tokens = max(64, min(8192, request.max_tokens))
-
-    base_prompt = """You are an execution planner inside an autonomous agent.
-Your job:
-- Generate ONLY valid actions
-- Follow task EXACTLY
-- Be precise and minimal
-
-Environment: Windows PowerShell
-Tools: python, file_write, basic shell
-
-RULES:
-- Use Python for coding tasks
-- Use tkinter for GUI tasks
-- Use file_write for creating files
-- NEVER use bash, gcc, or Linux commands
-
-OUTPUT FORMAT:
-Return ONLY valid JSON.
-No explanation.
-No markdown.
-No extra text."""
-
-    examples = """
-EXAMPLES:
-Task: create hello world python file
-Output: {"action": {"type": "file_write", "path": "hello.py", "content": "print('Hello World')"}}
-
-Task: create calculator using tkinter
-Output: {"action": {"type": "file_write", "path": "workspace/calculator.py", "content": "import tkinter ...", "confidence": 0.9}}
-"""
-
-    env_str = """
-Environment: Windows PowerShell.
-Allowed:
-* python
-* file_write
-* basic commands
-
-STRICTLY FORBIDDEN:
-* bash
-* gcc
-* linux paths
-* shell scripts"""
-
-    gui_keywords = ["calculator", "gui", "tkinter", "pygame", "qt"]
-    prompt_lower = request.prompt.lower()
-    if any(kw in prompt_lower for kw in gui_keywords):
-        env_str += """
-Create Python GUI using tkinter.
-Include buttons, input field, and basic operations (+, -, *, /).
-Output full working code."""
-
-    if "calculator" in prompt_lower:
-        env_str += """
-For calculator: Use tkinter.Entry for display, tkinter.Button for digits.
-Include number pad (0-9), operators (+, -, *, /), equals (=), clear (C).
-Handle divide by zero properly.
-Format numbers nicely."""
-
-    full_prompt = base_prompt + "\n\n" + examples + "\n\n" + env_str + "\n\nTASK: " + request.prompt + "\nOutput:"
-    request.prompt = full_prompt
 
     return request
 

@@ -12,6 +12,8 @@ def handle_command(command: str, args: dict) -> bool:
     """Main dispatch for all CLI commands."""
     if command == "new":
         return _run_new(args.get("task", ""), args.get("working_dir", None), args.get("auto_run", False))
+    elif command == "append":
+        return _run_append(args.get("task", ""), args.get("auto_run", False))
     elif command == "run":
         return _run_loop()
     elif command == "status":
@@ -29,6 +31,43 @@ def handle_command(command: str, args: dict) -> bool:
         task_id = args.get("task_id")
         if task_id:
             return _display_task_log(task_id)
+
+def _run_append(task: str, auto_run: bool = False) -> bool:
+    """Load existing state, decompose additional task, append steps, save."""
+    base_dir = Path.cwd()
+    state = state_manager.load(base_dir)
+    if state is None:
+        print("Error: No active task to append to. Use 'new' first.")
+        return False
+    
+    runtime_dir = state_manager.get_runtime_dir(base_dir)
+    logger.init(runtime_dir)
+    artifact_manager.init(runtime_dir, state.get("core_task", {}).get("task_id", "default"))
+
+    print(f"[CONTROLLER] Appending task: {task}")
+    
+    from . import task_decomposer
+    new_steps = task_decomposer.decompose(task)
+    
+    if not new_steps:
+        print("[ERROR] Failed to decompose additional task")
+        return False
+        
+    # Offset step IDs to avoid collision
+    offset = len(state.get("todo_list", []))
+    for i, step in enumerate(new_steps):
+        step["id"] = f"step_{offset + i + 1}"
+        state.setdefault("todo_list", []).append(step)
+    
+    state["stats"] = state_manager.recompute_stats(state)
+    state_manager.save(state)
+    
+    print(f"[CONTROLLER] Added {len(new_steps)} new steps to the plan")
+    
+    if auto_run:
+        return _run_loop()
+    return True
+
 def _run_new(task: str, working_dir: Optional[str] = None, auto_run: bool = False) -> bool:
     """Create state, decompose, optionally auto-run."""
     state = None
@@ -132,24 +171,6 @@ def _display_task_log(task_id: str) -> bool:
     return True
 
 
-def _display_task_log(task_id: str) -> bool:
-    """Display task execution log."""
-    from . import logger
-    from pathlib import Path
-    
-    logger.init(Path(".chotu"))
-    log_file = Path(".chotu/logs") / f"{task_id}.log"
-    
-    if not log_file.exists():
-        print(f"[ERROR] No log file found for task: {task_id}")
-        return False
-    
-    print(f"=== Task Log: {task_id} ===")
-    with open(log_file, "r", encoding="utf-8") as f:
-        print(f.read())
-    return True
-
-
 def _display_issues() -> bool:
     """Display issues for the current task."""
     from . import logger
@@ -175,64 +196,6 @@ def _display_issues() -> bool:
     
     for issue in issues[-10:]:
         print(issue.strip())
-    return True
-
-
-def _skip_step() -> bool:
-    """Skip current step."""
-    state_manager.save(state)
-
-    logger.log_classify_start(task)
-    try:
-        import dataclasses
-        profile = task_classifier.classify(task)
-        state["core_task"]["task_profile"] = dataclasses.asdict(profile)
-        logger.log_classify_result(profile.task_type, profile.domain, profile.complexity, profile.confidence)
-        if profile.uncertainty_notes:
-            logger.log_classify_uncertain(profile.task_type, profile.uncertainty_notes)
-        time_est = profile.estimated_time
-        time_str = f"~{time_est['min_seconds']}-{time_est['max_seconds']}s"
-        import dataclasses
-        ui_renderer.render_task_header(task, dataclasses.asdict(profile))
-    except Exception:
-        state["core_task"]["task_profile"] = {}
-
-    state_manager.save(state)
-    logger.log_task_start(task, 0)
-    logger.log_task_decompose_start(task)
-    context = {"task_profile": state["core_task"].get("task_profile", {})}
-    todo_list = task_decomposer.decompose(task, context=context)
-    for step_data in todo_list:
-        step = state_manager.create_step(
-            step_data.get("id", "step_000"),
-            step_data.get("description", ""),
-            step_data.get("depends_on", []),
-            step_data.get("expected_outcome", ""),
-            state["config"]["max_retries_per_step"]
-        )
-        state["todo_list"].append(step)
-    state["core_task"]["status"] = "decomposing"
-    state_manager.save(state)
-    logger.log_task_decompose_complete(len(todo_list))
-    logger.log_event("task_created", f"Task decomposed into {len(todo_list)} steps")
-
-    try:
-        graph = task_graph.build(state["todo_list"])
-        logger.log_graph_build(len(graph.nodes), sum(len(d) for d in graph.edges.values()), graph.is_valid)
-        if not graph.is_valid:
-            for err in graph.validation_errors:
-                logger.log_event("graph_warning", err)
-        logger.log_graph_order(graph.order)
-    except Exception:
-        pass
-
-    state["core_task"]["accepted_at"] = datetime.now(timezone.utc).isoformat()
-    state["core_task"]["status"] = "pending"
-    state["stats"] = state_manager.recompute_stats(state)
-    state_manager.save(state)
-    ui_renderer.render_plan(state.get("todo_list", []))
-    if auto_run:
-        return _run_loop()
     return True
 
 
@@ -308,6 +271,9 @@ def _run_loop() -> bool:
 
     print(f"[DEBUG] Total steps: {len(todo_list)}")
 
+    state["core_task"]["status"] = "running"
+    state_manager.save(state)
+    
     while True:
         try:
             verdict = loop_controller.check(state, _task_start_time)
@@ -355,24 +321,6 @@ def _run_loop() -> bool:
                         state_manager.save(state)
                         ui_renderer.render_message("error", f"Validation failed: Complex website task produced only {len(html_files)} files. Multi-step execution failed.")
                         return False
-                    
-                    # STEP 7: VALIDATION - CROSS-FILE CONSISTENCY
-                    try:
-                        from .planner import HEADER, STYLE
-                        for f in html_files:
-                            content = Path(os.path.join(task_output_dir, f)).read_text(encoding="utf-8")
-                            if HEADER.strip() not in content or STYLE.strip() not in content:
-                                state["core_task"]["status"] = "failed"
-                                state_manager.save(state)
-                                ui_renderer.render_message("error", f"Consistency failure: {f} is missing shared header or styles.")
-                                
-                                # Final status update
-                                from . import task_index
-                                final_status = state["core_task"]["status"]
-                                task_index.update_status(state["core_task"]["task_id"], final_status)
-                                return False
-                    except ImportError:
-                        pass
 
                 state["core_task"]["status"] = "completed"
                 state_manager.save(state)
@@ -380,10 +328,11 @@ def _run_loop() -> bool:
                 total_time = _time.time() - _task_start_time
                 llm_calls = state["stats"].get("llm_calls", 0)
                 cache_hits = state["stats"].get("llm_cache_hits", 0)
+                task_id = state["core_task"].get("task_id", "default")
                 
                 summary = f"""
 [TASK SUMMARY]
-Total steps: {total}
+Total steps: {state["stats"]["total_steps"]}
 Time taken: {total_time:.1f}s
 LLM calls: {llm_calls}
 Cache hits: {cache_hits}
@@ -444,7 +393,7 @@ Cache hits: {cache_hits}
         logger.log_step_start(step["id"], step["description"])
         
         task_id = state["core_task"].get("task_id", "default")
-        total = max(total, 1)
+        total = max(state["stats"]["total_steps"], 1)
         pct = int((step_num / total) * 10)
         bar = "█" * pct + "░" * (10 - pct)
         msg = f"[STEP START] Step {step_num}/{total} {bar} {pct*10}% → {step['description']}"
