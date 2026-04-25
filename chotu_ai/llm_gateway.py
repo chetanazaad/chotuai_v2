@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 
@@ -22,6 +23,7 @@ class GatewayRequest:
     max_tokens: int = 2048
     retry_count: int = 0
     metadata: dict = None
+    use_cache: bool = True
 
 
 @dataclasses.dataclass
@@ -58,7 +60,44 @@ _PROVIDERS = {
         "max_tokens": 4096,
         "timeout": 15,
     },
+    "gemini": {
+        "model": "gemini-2.0-flash",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        "type": "cloud",
+        "strengths": ["reasoning", "architecture", "complex", "high_quality"],
+        "max_tokens": 8192,
+        "timeout": 30,
+    },
 }
+
+_CONFIG = {
+    "use_cloud": False,
+    "cloud_provider": "gemini",
+    "api_key": "",
+    "fallback_enabled": True,
+}
+
+def _load_config() -> dict:
+    """Load configuration from .chotu/config.json."""
+    import os
+    config_path = Path(".chotu/config.json")
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                _CONFIG.update(loaded)
+                print(f"[CONFIG] Loaded: use_cloud={_CONFIG['use_cloud']}, cloud={_CONFIG['cloud_provider']}")
+        except Exception as e:
+            print(f"[CONFIG] Failed to load: {e}")
+    return _CONFIG
+
+
+def _get_config() -> dict:
+    """Get current config, loading if needed."""
+    if not _CONFIG.get("_loaded"):
+        _CONFIG["_loaded"] = True
+        _load_config()
+    return _CONFIG
 
 
 _OLLAMA_PORT = 11434
@@ -276,6 +315,20 @@ def _get_timeout_for_model(model: str) -> int:
     return _TIMEOUT_MAP.get(model, 15)
 
 
+def _call_provider(provider_name: str, model: str, prompt: str, temp: float, max_tok: int, timeout: int) -> tuple:
+    """Route to appropriate LLM call based on provider type."""
+    config = _PROVIDERS.get(provider_name)
+    if not config:
+        raise ValueError(f"Unknown provider: {provider_name}")
+
+    if config["type"] == "local":
+        return _call_ollama(model, prompt, temp, max_tok, timeout)
+    elif config["type"] == "cloud":
+        return _call_cloud(provider_name, model, prompt, temp, max_tok, timeout)
+    else:
+        raise ValueError(f"Unknown provider type: {config['type']}")
+
+
 def safe_llm_call(model: str, prompt: str, temp: float, max_tok: int, timeout: int = None) -> tuple:
     """Safe LLM call with timeout and error handling."""
     global _consecutive_timeouts
@@ -283,8 +336,15 @@ def safe_llm_call(model: str, prompt: str, temp: float, max_tok: int, timeout: i
     if timeout is None:
         timeout = _get_timeout_for_model(model)
 
+    provider_type = "local"
+    for name, cfg in _PROVIDERS.items():
+        if cfg.get("model") == model:
+            provider_type = cfg.get("type", "local")
+            model = name
+            break
+
     try:
-        result = _call_ollama(model, prompt, temp, max_tok, timeout)
+        result = _call_provider(model, model, prompt, temp, max_tok, timeout)
         _consecutive_timeouts = 0
         return result
     except TimeoutError:
@@ -297,26 +357,54 @@ def safe_llm_call(model: str, prompt: str, temp: float, max_tok: int, timeout: i
         raise
 
 
+def _get_cloud_fallback_provider() -> str:
+    """Get available cloud provider for failover."""
+    cfg = _get_config()
+    if cfg.get("use_cloud") and cfg.get("api_key"):
+        return cfg.get("cloud_provider", "gemini")
+    return None
+
+
+def _get_local_fallback_provider() -> str:
+    """Get available local provider for failover."""
+    if _check_provider("phi3"):
+        return "phi3"
+    if _check_provider("qwen:7b"):
+        return "qwen:7b"
+    return None
+
+
 def generate(request: GatewayRequest) -> GatewayResponse:
     """Single entry point. Routes, calls, normalizes. Never blocks."""
     from . import logger
 
-    print("[LLM] attempt start")
-    
-    if not _ensure_ollama_running():
-        logger.log_gateway_failure(request.purpose, "ollama", "Failed to start Ollama")
-        return _build_unavailable_response("Ollama server unavailable")
+    cfg = _get_config()
+    print(f"[LLM] attempt start (cloud_enabled={cfg.get('use_cloud')})")
 
-    request = _apply_guardrails(request)
-    
     provider_name = _select_provider(request)
     logger.log_gateway_start(request.purpose, provider_name)
+    print(f"[MODEL ROUTER] → selected {provider_name}")
+
+    request = _apply_guardrails(request)
 
     provider_config = _PROVIDERS[provider_name]
-    _ensure_model_loaded(provider_config["model"])
-    
+
+    if provider_config["type"] == "local":
+        if not _ensure_ollama_running():
+            fallbacks = _try_fallback(request, provider_name, "ollama_unavailable")
+            if fallbacks:
+                return fallbacks
+            logger.log_gateway_failure(request.purpose, "ollama", "Failed to start Ollama")
+            return _build_unavailable_response("Ollama server unavailable")
+        _ensure_model_loaded(provider_config["model"])
+
     from . import llm_cache
-    cached = llm_cache.get_cached(request.prompt)
+    cached = None
+    if request.use_cache:
+        cached = llm_cache.get_cached(request.prompt)
+    else:
+        print("[LLM RETRY] cache bypassed")
+
     if cached:
         from . import logger
         print(f"[LLM CACHE HIT]")
@@ -339,53 +427,112 @@ def generate(request: GatewayRequest) -> GatewayResponse:
             error=""
         )
         return response
+
     logger.log_gateway_start(request.purpose, provider_name)
-    print(f"[LLM] using model: {provider_config['model']}")
-    
-    provider_config = _PROVIDERS[provider_name]
-    _ensure_model_loaded(provider_config["model"])
+    print(f"[LLM] using {provider_config['type']}: {provider_config['model']}")
 
     if not _check_provider(provider_name):
-        alt_provider = "qwen:7b" if provider_name == "phi3" else "phi3"
-        if _check_provider(alt_provider):
-            logger.log_gateway_fallback(request.purpose, provider_name, alt_provider, "primary unavailable")
-            provider_name = alt_provider
-            provider_config = _PROVIDERS[provider_name]
-        else:
-            logger.log_gateway_failure(request.purpose, "no_provider", "All local providers unavailable")
-            return _build_unavailable_response("No local providers available")
+        fallbacks = _try_fallback(request, provider_name, "provider_unavailable")
+        if fallbacks:
+            return fallbacks
 
     provider_config = _PROVIDERS[provider_name]
     try:
-        raw_output, latency_ms, tokens_used = safe_llm_call(
+        # FIX 1: Enforce hard 10s timeout for all LLM calls
+        hard_timeout = 10
+        print(f"[LLM CALL START] model={provider_config['model']} purpose={request.purpose}")
+        raw_output, latency_ms, tokens_used = _call_provider(
+            provider_name=provider_name,
             model=provider_config["model"],
             prompt=request.prompt,
             temp=request.temperature,
             max_tok=request.max_tokens,
-            timeout=provider_config["timeout"]
+            timeout=hard_timeout
         )
-    except Exception as e:
+        print(f"[LLM CALL END] model={provider_config['model']} latency={latency_ms}ms")
+
+        # FIX 2: Validate response quality - force fallback on bad output
+        if not raw_output or len(raw_output.strip()) < 50:
+            print(f"[LLM] bad_output: response too short ({len(raw_output)} chars)")
+            raise ValueError("bad_output: response too short")
+
+        text = _normalize_text(raw_output)
+        structured, parsed = _parse_response(raw_output)
+        if request.purpose in ("planning", "code_action") and not structured:
+            print(f"[LLM] bad_output: no structured output for {request.purpose}")
+            raise ValueError("bad_output: no structured output")
+
+    except (ValueError, Exception) as e:
+        print(f"[LLM CALL END] FAILED: {str(e)[:50]}")
         error_msg = str(e)
-        alt_model = "qwen:7b" if provider_name == "phi3" else "phi3"
-        print(f"[LLM] Timeout → switching to {alt_model}")
-        try:
-            alt_config = _PROVIDERS[alt_model]
-            raw_output, latency_ms, tokens_used = safe_llm_call(
-                model=alt_config["model"],
-                prompt=request.prompt,
-                temp=request.temperature,
-                max_tok=request.max_tokens,
-                timeout=alt_config["timeout"]
-            )
-            provider_name = alt_model
-            provider_config = alt_config
-        except Exception as e2:
-            logger.log_gateway_failure(request.purpose, provider_name, error_msg)
-            print(f"[LLM] All models timed out")
-            return _build_unavailable_response(f"LLM timeout: {error_msg}")
+        # Handle ValueError("bad_output") - this triggers fallback attempt
+        if "bad_output" in error_msg.lower():
+            print(f"[MODEL SWITCH] {provider_name} -> fallback (reason: bad_output)")
+        elif "timeout" in error_msg.lower() or isinstance(e, TimeoutError):
+            print(f"[LLM TIMEOUT] model={provider_config['model']} after {hard_timeout}s")
+            error_msg = f"[LLM ERROR] timeout"
+        else:
+            print(f"[LLM] {provider_name} failed: {error_msg}")
+
+        print(f"[RETRY REASON] {error_msg}")
+        fallbacks = _try_fallback(request, provider_name, error_msg)
+        if fallbacks:
+            return fallbacks
+        
+        return GatewayResponse(
+            provider=provider_name,
+            model=provider_config["model"],
+            success=False,
+            confidence=0.0,
+            latency_ms=0,
+            tokens_used=0,
+            raw_output="",
+            text="",
+            structured=False,
+            parsed={},
+            fallback_used=False,
+            escalation_level=request.escalation_level,
+            error=error_msg
+        )
+        
+        logger.log_gateway_failure(request.purpose, provider_name, error_msg)
+        print(f"[LLM] All providers failed")
+        return _build_unavailable_response(f"LLM error: {error_msg}")
 
     text = _normalize_text(raw_output)
     structured, parsed = _parse_response(raw_output)
+    
+    # FIX: STRICT RETRY LOGIC (LLM level)
+    # Retry ONLY if: LLM timeout, no response (empty)
+    is_bad = False
+    fail_reason = ""
+    
+    if not raw_output or not raw_output.strip():
+        is_bad = True
+        fail_reason = "empty_response"
+            
+    if is_bad:
+        print(f"[RETRY REASON] {fail_reason}")
+        print(f"[LLM] Bad output detected ({fail_reason}) → triggering fallback")
+        fallbacks = _try_fallback(request, provider_name, fail_reason)
+        if fallbacks:
+            return fallbacks
+        return GatewayResponse(
+            provider=provider_name,
+            model=provider_config["model"],
+            success=False,
+            confidence=0.0,
+            latency_ms=latency_ms,
+            tokens_used=tokens_used,
+            raw_output=raw_output,
+            text=text,
+            structured=structured,
+            parsed=parsed,
+            fallback_used=False,
+            escalation_level=request.escalation_level,
+            error=f"bad_output:{fail_reason}"
+        )
+
     confidence = _estimate_confidence(raw_output, structured, request.purpose)
 
     response = GatewayResponse(
@@ -406,10 +553,104 @@ def generate(request: GatewayRequest) -> GatewayResponse:
 
     _record_usage(provider_name, latency_ms, tokens_used, True)
     logger.log_gateway_success(request.purpose, provider_name, confidence, latency_ms)
-    
+
+    # Only cache if it was good
     llm_cache.set_cached(request.prompt, raw_output, provider_config["model"], tokens_used)
-    
+
     return response
+
+
+def _try_fallback(request: GatewayRequest, failed_provider: str, reason: str) -> Optional[GatewayResponse]:
+    """Try cross-type failover when primary provider fails."""
+    from . import logger
+    cfg = _get_config()
+    if not cfg.get("fallback_enabled"):
+        return None
+
+    failed_config = _PROVIDERS.get(failed_provider)
+    if not failed_config:
+        return None
+
+    failed_type = failed_config.get("type", "local")
+
+    if failed_type == "local" and cfg.get("use_cloud") and cfg.get("api_key"):
+        cloud_provider = cfg.get("cloud_provider", "gemini")
+        if _check_provider(cloud_provider):
+            print(f"[FAILOVER] → switching to {cloud_provider}")
+            logger.log_gateway_fallback(request.purpose, failed_provider, cloud_provider, reason)
+            try:
+                cloud_config = _PROVIDERS[cloud_provider]
+                raw_output, latency_ms, tokens_used = _call_provider(
+                    provider_name=cloud_provider,
+                    model=cloud_config["model"],
+                    prompt=request.prompt,
+                    temp=request.temperature,
+                    max_tok=request.max_tokens,
+                    timeout=cloud_config["timeout"]
+                )
+                text = _normalize_text(raw_output)
+                structured, parsed = _parse_response(raw_output)
+                confidence = _estimate_confidence(raw_output, structured, request.purpose)
+                _record_usage(cloud_provider, latency_ms, tokens_used, True)
+                return GatewayResponse(
+                    provider=cloud_provider,
+                    model=cloud_config["model"],
+                    success=True,
+                    confidence=max(0.3, confidence - 0.1),
+                    latency_ms=latency_ms,
+                    tokens_used=tokens_used,
+                    raw_output=raw_output,
+                    text=text,
+                    structured=structured,
+                    parsed=parsed,
+                    fallback_used=True,
+                    escalation_level=request.escalation_level,
+                    error=""
+                )
+            except Exception:
+                pass
+
+    if failed_type == "cloud":
+        local_provider = _get_local_fallback_provider()
+        if local_provider:
+            print(f"[FAILOVER] → switching to {local_provider}")
+            logger.log_gateway_fallback(request.purpose, failed_provider, local_provider, reason)
+            if not _ensure_ollama_running():
+                return None
+            _ensure_model_loaded(_PROVIDERS[local_provider]["model"])
+            try:
+                local_config = _PROVIDERS[local_provider]
+                raw_output, latency_ms, tokens_used = _call_provider(
+                    provider_name=local_provider,
+                    model=local_config["model"],
+                    prompt=request.prompt,
+                    temp=request.temperature,
+                    max_tok=request.max_tokens,
+                    timeout=local_config["timeout"]
+                )
+                text = _normalize_text(raw_output)
+                structured, parsed = _parse_response(raw_output)
+                confidence = _estimate_confidence(raw_output, structured, request.purpose)
+                _record_usage(local_provider, latency_ms, tokens_used, True)
+                return GatewayResponse(
+                    provider=local_provider,
+                    model=local_config["model"],
+                    success=True,
+                    confidence=max(0.3, confidence - 0.1),
+                    latency_ms=latency_ms,
+                    tokens_used=tokens_used,
+                    raw_output=raw_output,
+                    text=text,
+                    structured=structured,
+                    parsed=parsed,
+                    fallback_used=True,
+                    escalation_level=request.escalation_level,
+                    error=""
+                )
+            except Exception:
+                pass
+
+    return None
 
 
 def is_available() -> bool:
@@ -507,6 +748,12 @@ def _check_provider(provider_name: str) -> bool:
         _provider_cache[provider_name] = {"available": available, "time": now}
         return available
 
+    if config["type"] == "cloud":
+        cfg = _get_config()
+        if cfg.get("use_cloud") and cfg.get("api_key"):
+            return True
+        return False
+
     return False
 
 
@@ -549,14 +796,94 @@ def _call_ollama(model: str, prompt: str, temperature: float, max_tokens: int, t
     return raw_output, latency_ms, tokens_used
 
 
+def _call_cloud(provider_name: str, model: str, prompt: str, temperature: float, max_tokens: int, timeout: int) -> tuple:
+    """Raw HTTP call to cloud LLM provider."""
+    config = _PROVIDERS.get(provider_name)
+    if not config:
+        raise ValueError(f"Unknown provider: {provider_name}")
+
+    cfg = _get_config()
+    api_key = cfg.get("api_key", "")
+    if not api_key:
+        raise ValueError(f"No API key configured for {provider_name}")
+
+    print(f"[LLM] Calling cloud provider: {provider_name}...")
+    endpoint = config["endpoint"]
+    if "gemini" in provider_name:
+        endpoint += f"?key={api_key}"
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        }
+    }
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json"
+    }
+    req = urllib.request.Request(endpoint, data=data, headers=headers)
+
+    start = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            response_text = resp.read().decode("utf-8")
+            result = json.loads(response_text)
+    except Exception as e:
+        print(f"[INFRA] Cloud call failed: {e}")
+        raise
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+
+    try:
+        raw_output = result["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        raw_output = str(result)
+
+    if not raw_output or not raw_output.strip():
+        print("[INFRA] Empty cloud response")
+        raise ValueError("Empty output")
+
+    tokens_used = len(raw_output.split())
+    return raw_output, latency_ms, tokens_used
+
+
 def _parse_response(raw_output: str) -> tuple:
-    """Parse raw text -> (structured: bool, parsed: dict)."""
+    """Parse raw text -> (structured: bool, parsed: dict).
+    
+    FIX 1: Fallback parsing for non-JSON responses.
+    If valid JSON not found, extract code blocks and assume file_write.
+    """
     parsed = extract_json(raw_output)
     if parsed:
         if isinstance(parsed, dict):
             return True, parsed
         if isinstance(parsed, list):
             return True, {"items": parsed}
+
+    # Fallback Parsing (FIX 1)
+    if "```" in raw_output:
+        # Extract content from first code block
+        parts = raw_output.split("```")
+        if len(parts) >= 3:
+            content = parts[1]
+            # Strip potential language tag
+            lines = content.split("\n")
+            if lines and not lines[0].startswith(("{", "[")):
+                # Probably a language tag like "html" or "python"
+                content = "\n".join(lines[1:]).strip()
+            
+            print(f"[LLM PARSER] Non-JSON detected -> Fallback: file_write (index.html)")
+            return True, {
+                "action": {
+                    "type": "file_write",
+                    "path": "index.html",
+                    "content": content
+                }
+            }
 
     return False, {}
 

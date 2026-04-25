@@ -8,10 +8,51 @@ from typing import Optional
 from . import state_manager, logger, executor, evaluator, task_decomposer, planner, validator, decision_engine, smart_memory, filtered_search, feedback_learning, knowledge_store, task_classifier, output_formatter, artifact_manager, ui_renderer, loop_controller, task_graph
 
 
+def _generate_shared_layout(task: str, html_files: list) -> dict:
+    """Generate shared layout for multi-page HTML apps via LLM."""
+    from . import llm_gateway, llm_gateway as gateway
+
+    pages_str = ", ".join(html_files)
+    prompt = f"""Generate a shared HTML layout for a multi-page web application.
+
+Task: {task}
+Pages: {pages_str}
+
+Generate a JSON object with the following keys:
+- "header": HTML for the header (logo, title, etc.)
+- "navbar": HTML navigation bar with links to ALL pages: {pages_str}
+- "footer": HTML footer with copyright/info
+- "css": Shared CSS styles (optional, can be inline)
+
+Respond with ONLY valid JSON, no explanation."""
+
+    try:
+        req = gateway.GatewayRequest(
+            purpose="layout_generation",
+            prompt=prompt,
+            preferred_provider="phi3",
+            temperature=0.2,
+            max_tokens=2048
+        )
+        resp = gateway.generate(req)
+        if resp.success and resp.text:
+            import json
+            import re
+            text = resp.text.strip()
+            text = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
+            text = re.sub(r'^```\s*$', '', text, flags=re.MULTILINE)
+            text = text.strip()
+            layout = json.loads(text)
+            return layout
+    except Exception as e:
+        print(f"[LAYOUT] Generation failed: {e}")
+    return {}
+
+
 def handle_command(command: str, args: dict) -> bool:
     """Main dispatch for all CLI commands."""
     if command == "new":
-        return _run_new(args.get("task", ""), args.get("working_dir", None), args.get("auto_run", False))
+        return _run_new(args.get("task", ""), args.get("working_dir", None), args.get("auto_run", False), args.get("force_new", False))
     elif command == "run":
         return _run_loop()
     elif command == "status":
@@ -29,8 +70,16 @@ def handle_command(command: str, args: dict) -> bool:
         task_id = args.get("task_id")
         if task_id:
             return _display_task_log(task_id)
-def _run_new(task: str, working_dir: Optional[str] = None, auto_run: bool = False) -> bool:
+def _run_new(task: str, working_dir: Optional[str] = None, auto_run: bool = False, force_new: bool = False) -> bool:
     """Create state, decompose, optionally auto-run."""
+    import re
+    from . import system_check
+
+    readiness = system_check.full_check()
+    if not readiness["ready"]:
+        print(f"[SYSTEM] Not ready: {readiness}")
+        return False
+
     state = None
     if not task:
         print("Error: Task description required")
@@ -40,20 +89,30 @@ def _run_new(task: str, working_dir: Optional[str] = None, auto_run: bool = Fals
     logger.init(runtime_dir)
     _cleanup_workspace()
     state = state_manager.create_fresh_state(task, working_dir)
-    
-    # STEP 3: CREATE TASK DIRECTORY
-    task_dir = state["core_task"]["output_dir"]
-    os.makedirs(task_dir, exist_ok=True)
-    print(f"[TASK OUTPUT] Created folder: {task_dir}")
-    
-    # STEP 2: SAVE ON TASK START
-    from . import task_index
-    task_index.add_task(
-        state["core_task"]["task_id"],
-        state["core_task"]["description"],
-        state["core_task"]["output_dir"]
-    )
-    
+
+    task_hash = state_manager.get_task_hash(task)
+    existing_task = None
+    if not force_new:
+        from . import task_index
+        existing_task = task_index.get_task_by_hash(task_hash)
+
+    if existing_task:
+        print(f"[TASK REUSED] Using existing folder: {existing_task['output_dir']}")
+        state["core_task"]["task_id"] = existing_task["task_id"]
+        state["core_task"]["output_dir"] = existing_task["output_dir"]
+        state["core_task"]["status"] = "running"
+        task_index.update_status(existing_task["task_id"], "running")
+    else:
+        task_dir = state["core_task"]["output_dir"]
+        os.makedirs(task_dir, exist_ok=True)
+        print(f"[TASK OUTPUT] Created folder: {task_dir}")
+        task_index.add_task(
+            state["core_task"]["task_id"],
+            state["core_task"]["description"],
+            state["core_task"]["output_dir"],
+            task_hash=task_hash
+        )
+
     artifact_manager.init(runtime_dir, state.get("core_task", {}).get("task_id", "default"))
     state_manager.save(state)
 
@@ -61,10 +120,32 @@ def _run_new(task: str, working_dir: Optional[str] = None, auto_run: bool = Fals
     profile = task_classifier.classify(task)
     if profile:
         logger.log_classify_result(profile.task_type, profile.domain, profile.complexity, profile.confidence)
-    
+
     import dataclasses
     state["core_task"]["task_profile"] = dataclasses.asdict(profile) if profile else {}
-    
+
+    # FIX: MODEL LOCK & CONSISTENT MODEL
+    forced_model = os.environ.get("CHOTU_FORCED_MODEL", "")
+    if forced_model and forced_model != "auto":
+        state["selected_model"] = forced_model
+        print(f"[MODEL LOCKED] {forced_model}")
+    else:
+        state["selected_model"] = None
+        from . import model_router
+        decision = model_router.select_model(
+            purpose="task_init",
+            task_profile=state["core_task"]["task_profile"]
+        )
+        state["task_model"] = decision.model
+
+    html_files = re.findall(r'([a-zA-Z0-9_-]+\.html)', task)
+    if len(html_files) > 1 and force_new:
+        print(f"[LAYOUT] Detected {len(html_files)} HTML pages, generating shared layout...")
+        shared_layout = _generate_shared_layout(task, html_files)
+        if shared_layout:
+            state["core_task"]["shared_layout"] = shared_layout
+            print("[LAYOUT] Shared layout generated successfully")
+
     try:
         ui_renderer.render_task_header(task, dataclasses.asdict(profile))
     except Exception:
@@ -73,8 +154,16 @@ def _run_new(task: str, working_dir: Optional[str] = None, auto_run: bool = Fals
     state_manager.save(state)
     logger.log_task_start(task, 0)
     logger.log_task_decompose_start(task)
-    context = {"task_profile": state["core_task"].get("task_profile", {})}
+    context = {
+        "task_profile": state["core_task"].get("task_profile", {}),
+        "state": state
+    }
     todo_list = task_decomposer.decompose(task, context=context)
+    
+    # FIX 4: Store planning mode so executor knows if LLM was used
+    state["core_task"]["planning_mode"] = context.get("planning_mode", "unknown")
+    print(f"[PLANNING MODE] {state['core_task']['planning_mode']}")
+
     for step_data in todo_list:
         step = state_manager.create_step(
             step_data.get("id", "step_000"),
@@ -307,6 +396,8 @@ def _run_loop() -> bool:
         state_manager.save(state)
 
     print(f"[DEBUG] Total steps: {len(todo_list)}")
+    state["core_task"]["status"] = "running"
+    state_manager.save(state)
 
     while True:
         try:
@@ -374,19 +465,40 @@ def _run_loop() -> bool:
                     except ImportError:
                         pass
 
-                state["core_task"]["status"] = "completed"
+                # FIX 5: REAL COMPLETION CHECK
+                all_done = _all_steps_completed(state)
+                any_failed_steps = any(s.get("status") == "failed" for s in state.get("completed_steps", []))
+                llm_usage = state.get("llm_usage", {"calls": 0, "success": 0})
+                
+                if not all_done:
+                    state["core_task"]["status"] = "failed"
+                    ui_renderer.render_message("error", "Task incomplete: not all steps were executed.")
+                elif any_failed_steps:
+                    state["core_task"]["status"] = "partial"
+                    ui_renderer.render_message("warning", "Task completed with some failed steps.")
+                elif llm_usage["success"] == 0 and state["core_task"].get("task_profile", {}).get("complexity") != "low":
+                    state["core_task"]["status"] = "partial"
+                    ui_renderer.render_message("warning", "Task finished but no high-quality LLM generation used.")
+                else:
+                    state["core_task"]["status"] = "completed"
+                
                 state_manager.save(state)
                 
                 total_time = _time.time() - _task_start_time
-                llm_calls = state["stats"].get("llm_calls", 0)
-                cache_hits = state["stats"].get("llm_cache_hits", 0)
+                llm_usage = state.get("llm_usage", {"calls": 0, "success": 0})
+                llm_calls = llm_usage.get("calls", 0)
+                llm_success = llm_usage.get("success", 0)
+                llm_failed = llm_calls - llm_success
                 
                 summary = f"""
 [TASK SUMMARY]
 Total steps: {total}
 Time taken: {total_time:.1f}s
-LLM calls: {llm_calls}
-Cache hits: {cache_hits}
+
+[LLM STATS]
+  calls:   {llm_calls}
+  success: {llm_success}
+  failed:  {llm_failed}
 """
                 print(summary)
                 logger.log_visibility(task_id, summary)

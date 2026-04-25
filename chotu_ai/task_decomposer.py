@@ -7,80 +7,131 @@ from typing import Optional
 
 
 def decompose(core_task: str, context: Optional[dict] = None) -> list:
-    """Hybrid decomposition: System base plan + optional LLM refinement."""
+    """Hybrid decomposition: System base plan + LLM refinement.
+    
+    FIX 1: Limit LLM attempts to MAX 2 (phi3 -> qwen).
+    """
     context = context or {}
     task_lower = core_task.lower()
     
     task_profile = context.get("task_profile", {})
-    is_simple = False
     if isinstance(task_profile, dict):
-        is_simple = task_profile.get("complexity") == "low" and task_profile.get("domain") == "filesystem"
+        complexity = task_profile.get("complexity", "low")
+        domain = task_profile.get("domain", "")
     else:
-        is_simple = getattr(task_profile, "complexity", "") == "low" and getattr(task_profile, "domain", "") == "filesystem"
+        complexity = getattr(task_profile, "complexity", "low")
+        domain = getattr(task_profile, "domain", "")
+    
+    is_simple = complexity == "low" and domain == "filesystem"
+    is_complex = complexity in ("medium", "high")
 
     base_plan = _generate_base_plan(core_task, task_lower)
+    planning_mode = "base"
     
     final_plan = []
     if base_plan:
-        print(f"[DECOMPOSER] Base plan generated: {len(base_plan)} steps")
-        
         if is_simple:
-            print(f"[DECOMPOSER] Simple task - using base plan")
             final_plan = base_plan
+            planning_mode = "base"
         else:
-            llm_available = _check_llm_availability()
-            if llm_available:
-                refined_plan = _refine_plan_with_llm(base_plan, core_task, context)
-                if refined_plan and _validate_refined_plan(base_plan, refined_plan):
-                    if len(refined_plan) > 0:
-                        print(f"[DECOMPOSER] Using LLM refined plan: {len(refined_plan)} steps")
-                        final_plan = refined_plan
-                    else:
-                        print("[SAFEGUARD] Ignoring empty LLM plan")
-                        final_plan = base_plan
+            # FIX 1 & 4: try LLM once
+            llm_plan = None
+            if _check_llm_availability():
+                state = context.get("state", {})
+                if state.get("selected_model"):
+                    base_model = state["selected_model"]
+                    print(f"[ROUTER SKIPPED] using user-selected model for decomposition")
                 else:
-                    print(f"[DECOMPOSER] LLM refinement failed - using base plan")
-                    final_plan = base_plan
+                    base_model = state.get("task_model", "phi3")
+                
+                try:
+                    print(f"[MODEL USED] {base_model} (planning)")
+                    refined = _refine_plan_with_llm(base_plan, core_task, context, model=base_model)
+                    if refined and _validate_refined_plan(base_plan, refined) and len(refined) > 0:
+                        llm_plan = refined
+                        planning_mode = "llm"
+                except Exception:
+                    pass
+                
+                if not llm_plan and not state.get("selected_model"):
+                    fallback_model = "qwen:7b" if base_model == "phi3" else "phi3"
+                    try:
+                        print(f"[MODEL SWITCH] {base_model} -> {fallback_model} (planning retry)")
+                        refined = _refine_plan_with_llm(base_plan, core_task, context, model=fallback_model)
+                        if refined and _validate_refined_plan(base_plan, refined) and len(refined) > 0:
+                            llm_plan = refined
+                            planning_mode = "llm"
+                    except Exception:
+                        pass
+            
+            if llm_plan:
+                final_plan = llm_plan
             else:
+                print("[DECOMPOSER] Fallback → base plan")
                 final_plan = base_plan
+                planning_mode = "fallback"
     else:
-        llm_available = _check_llm_availability()
-        if llm_available and not is_simple:
-            try:
-                result = _decompose_with_llm(core_task, context)
-                if result and isinstance(result, list) and len(result) > 0:
-                    final_plan = result
-            except Exception:
-                pass
-        
-        if not final_plan:
-            print("[PLANNER] fallback used instantly")
-            final_plan = _decompose_fallback(core_task, context)
+        # No base plan available — try LLM from scratch
+        if not is_simple:
+            if _check_llm_availability():
+                state = context.get("state", {})
+                if state.get("selected_model"):
+                    base_model = state["selected_model"]
+                    print(f"[ROUTER SKIPPED] using user-selected model for decomposition scratch")
+                else:
+                    base_model = state.get("task_model", "phi3")
 
-    # STEP 4 — APPLY DURING STEP CREATION
+                try:
+                    print(f"[MODEL USED] {base_model} (planning scratch)")
+                    result = _decompose_with_llm(core_task, context, model=base_model)
+                    if result and isinstance(result, list) and len(result) > 0:
+                        final_plan = result
+                        planning_mode = "llm"
+                except Exception:
+                    pass
+                
+                if not final_plan and not state.get("selected_model"):
+                    fallback_model = "qwen:7b" if base_model == "phi3" else "phi3"
+                    try:
+                        print(f"[MODEL SWITCH] {base_model} -> {fallback_model} (planning scratch retry)")
+                        result = _decompose_with_llm(core_task, context, model=fallback_model)
+                        if result and isinstance(result, list) and len(result) > 0:
+                            final_plan = result
+                            planning_mode = "llm"
+                    except Exception:
+                        pass
+    
+    if context.get("state") is not None:
+        context["state"]["core_task"]["planning_mode"] = planning_mode
+    
+    if not final_plan:
+        print("[DECOMPOSER] Fallback → rule-based decomposition")
+        final_plan = _decompose_fallback(core_task, context)
+        planning_mode = "fallback"
+
+    # FIX 2: Enforce minimum steps for build/coding tasks
+    final_plan = _enforce_minimum_steps(final_plan, core_task, task_lower)
+
+    # FIX 4: Store planning mode in context for downstream use
+    context["planning_mode"] = planning_mode
+
+    # Assign target_file to each step
     for step in final_plan:
-        # User requested: re.search(r'(\w+\.html)', text)
-        # We use a slightly more robust version that also supports .py etc.
         filename = _extract_filename(step.get("description", ""))
         if filename:
-            # Every step must contain target_file
             step["target_file"] = filename
-            # STEP 5 — DEBUG LOG
             print(f"[DECOMPOSER] Assigned target_file → {filename}")
         else:
-            # Try extracting from the core task if description is generic
             filename_from_task = _extract_filename(core_task)
             if filename_from_task and "index.html" in filename_from_task:
                  step["target_file"] = filename_from_task
 
-    # STEP 6 — VALIDATION
+    # Validation — warn about missing target_file
     for step in final_plan:
         if "target_file" not in step:
-            # For non-file tasks, target_file is not required, but we warn anyway for build tasks
             if any(kw in str(step).lower() for kw in ["html", "page", "file", "script", ".py"]):
                 print(f"[WARNING] Missing target_file for file-related step: {step}")
             else:
-                # Default for build tasks if we can't find one
                 if "create" in str(step).lower():
                     step["target_file"] = "output.html"
                     print(f"[DECOMPOSER] Defaulting target_file to output.html for step: {step.get('description')}")
@@ -88,17 +139,80 @@ def decompose(core_task: str, context: Optional[dict] = None) -> list:
     return final_plan
 
 
+def _enforce_minimum_steps(plan: list, core_task: str, task_lower: str) -> list:
+    """FIX 2: Enforce meaningful multi-step decomposition for coding tasks.
+    
+    Tasks involving build/create/app/calculator MUST have separate steps for:
+      - Structure (HTML)
+      - Styling (CSS)
+      - Logic (JS/Python)
+      - Integration/Testing
+    """
+    BUILD_KEYWORDS = ["build", "create", "app", "system", "calculator", "converter",
+                      "dashboard", "website", "portal", "tracker", "manager"]
+    
+    is_build = any(kw in task_lower for kw in BUILD_KEYWORDS)
+    if not is_build:
+        return plan
+    
+    # If already has enough steps, don't interfere
+    if len(plan) >= 3:
+        return plan
+    
+    print(f"[DECOMPOSER] Enforcing multi-step plan for build task ({len(plan)} -> 4+ steps)")
+    
+    # Determine the primary output file
+    target = "index.html"
+    for step in plan:
+        tf = step.get("target_file", "")
+        if tf:
+            target = tf
+            break
+    
+    base_name = target.rsplit(".", 1)[0] if "." in target else target
+    is_html = target.endswith(".html")
+    is_python = target.endswith(".py")
+    
+    if is_html:
+        enforced = [
+            {"id": "step_001", "description": f"Create {target} with HTML structure", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+            {"id": "step_002", "description": f"Add CSS styling to {target}", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+            {"id": "step_003", "description": f"Add JavaScript logic to {target}", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+            {"id": "step_004", "description": f"Integrate and finalize {target}", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+        ]
+    elif is_python:
+        enforced = [
+            {"id": "step_001", "description": f"Create {target} with core structure", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+            {"id": "step_002", "description": f"Add UI/interface elements to {target}", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+            {"id": "step_003", "description": f"Add business logic to {target}", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+            {"id": "step_004", "description": f"Test and verify {target}", "target_file": target,
+             "action": "file_write", "expected_outcome": {"type": "file_exists", "path": f"output/{target}"}},
+        ]
+    else:
+        return plan
+    
+    return enforced
+
+
 def _generate_base_plan(core_task: str, task_lower: str) -> list:
-    """Phase 1: Generate deterministic base plan."""
+    """Phase 1: Generate deterministic base plan with SMART filename extraction."""
     todo_list = []
     step_num = 1
     
+    # ── MULTI-PAGE / WEBSITE TASKS ──
     if any(kw in task_lower for kw in ["multiple pages", "system", "app", "website", "pages", "web", "multi-page"]):
         import re
+        # Priority 1: Use EXPLICIT filenames from the prompt
         html_files = re.findall(r'([a-zA-Z0-9_-]+\.html)', core_task)
         
         if html_files:
-            # Use dynamically found html files from the prompt
             for page in html_files:
                 todo_list.append({
                     "id": f"step_{step_num:03d}",
@@ -108,30 +222,18 @@ def _generate_base_plan(core_task: str, task_lower: str) -> list:
                     "expected_outcome": {"type": "file_exists", "path": f"output/{page}"}
                 })
                 step_num += 1
+            todo_list.append({
+                "id": f"step_{step_num:03d}",
+                "description": "Add shared styling and navigation",
+                "expected_outcome": ""
+            })
             return todo_list
         
-        # Fallback to templates if no specific HTML files were mentioned
-        website_templates = {
-            "student": ["index.html", "students.html", "add_student.html", "report.html"],
-            "news": ["index.html", "article.html", "contact.html", "about.html"],
-            "business": ["index.html", "services.html", "contact.html", "about.html"],
-            "default": ["index.html", "page1.html", "page2.html", "page3.html"],
-        }
-        
-        for key, pages in website_templates.items():
-            if key in task_lower:
-                for page in pages:
-                    todo_list.append({
-                        "id": f"step_{step_num:03d}",
-                        "description": f"Create {page}",
-                        "target_file": page,
-                        "action": "file_write",
-                        "expected_outcome": {"type": "file_exists", "path": f"output/{page}"}
-                    })
-                    step_num += 1
-        
-        if not todo_list:
-            for page in website_templates["default"]:
+        # Priority 2: Infer REAL page names from context keywords
+        inferred = _infer_pages_from_context(task_lower)
+        if inferred:
+            print(f"[DECOMPOSER] Smart inference: {inferred}")
+            for page in inferred:
                 todo_list.append({
                     "id": f"step_{step_num:03d}",
                     "description": f"Create {page}",
@@ -140,14 +242,38 @@ def _generate_base_plan(core_task: str, task_lower: str) -> list:
                     "expected_outcome": {"type": "file_exists", "path": f"output/{page}"}
                 })
                 step_num += 1
+            todo_list.append({
+                "id": f"step_{step_num:03d}",
+                "description": "Add shared styling and navigation",
+                "expected_outcome": ""
+            })
+            return todo_list
+    
+    # ── SINGLE-APP TASKS (calculator, converter, form, etc.) ──
+    if any(kw in task_lower for kw in [
+        "calculator", "converter", "timer", "clock", "counter",
+        "quiz", "form", "login", "signup", "landing", "portfolio",
+        "resume", "todo", "todolist", "to-do", "single page",
+        "simple page", "webpage", "web page"
+    ]):
+        # Single app → index.html only
+        is_python_gui = any(kw in task_lower for kw in ["gui", "tkinter", "pygame", "qt", "desktop"])
+        if is_python_gui:
+            return [
+                {"id": "step_001", "description": "Create calculator.py with tkinter", "target_file": "calculator.py",
+                 "expected_outcome": {"type": "file_exists", "path": "output/calculator.py"}}
+            ]
         
         todo_list.append({
-            "id": f"step_{step_num:03d}",
-            "description": "Add shared styling and navigation",
-            "expected_outcome": ""
+            "id": "step_001",
+            "description": "Create index.html",
+            "target_file": "index.html",
+            "action": "file_write",
+            "expected_outcome": {"type": "file_exists", "path": "output/index.html"}
         })
         return todo_list
     
+    # ── SYSTEM / PROJECT TASKS ──
     if "system" in task_lower or "project" in task_lower:
         steps = [
             {"id": "step_001", "description": "Analyze requirements", "expected_outcome": ""},
@@ -158,6 +284,7 @@ def _generate_base_plan(core_task: str, task_lower: str) -> list:
         ]
         return steps
     
+    # ── API / REST TASKS ──
     if "api" in task_lower or "rest" in task_lower or "flask" in task_lower:
         steps = [
             {"id": "step_001", "description": "Create project directory", "expected_outcome": "output/app"},
@@ -167,14 +294,83 @@ def _generate_base_plan(core_task: str, task_lower: str) -> list:
         ]
         return steps
     
-    if "calculator" in task_lower or "gui" in task_lower:
-        steps = [
-            {"id": "step_001", "description": "Create calculator.py with tkinter", "expected_outcome": "output/calculator.py"},
-            {"id": "step_002", "description": "Add UI elements (buttons, display)", "expected_outcome": ""},
-            {"id": "step_003", "description": "Add calculation logic", "expected_outcome": ""},
-            {"id": "step_004", "description": "Test the calculator", "expected_outcome": ""}
-        ]
-        return steps
+    return None
+
+
+def _infer_pages_from_context(task_lower: str) -> list:
+    """Infer REAL page names from prompt keywords instead of page1.html, page2.html.
+    
+    Maps domain-specific keywords to realistic page filenames.
+    Returns None if no meaningful inference can be made.
+    """
+    # Domain-to-pages mapping — ordered by specificity
+    _DOMAIN_PAGES = {
+        # Finance
+        "finance":       ["index.html", "transactions.html", "add_transaction.html", "analytics.html", "settings.html"],
+        "budget":        ["index.html", "budget.html", "expenses.html", "reports.html"],
+        "invoice":       ["index.html", "invoices.html", "create_invoice.html", "clients.html"],
+        "expense":       ["index.html", "expenses.html", "add_expense.html", "reports.html"],
+        # Education
+        "student":       ["index.html", "students.html", "add_student.html", "report.html"],
+        "school":        ["index.html", "students.html", "classes.html", "teachers.html"],
+        "course":        ["index.html", "courses.html", "enroll.html", "progress.html"],
+        "learning":      ["index.html", "courses.html", "lessons.html", "progress.html"],
+        # E-commerce
+        "shop":          ["index.html", "products.html", "cart.html", "checkout.html"],
+        "store":         ["index.html", "products.html", "cart.html", "checkout.html"],
+        "ecommerce":     ["index.html", "products.html", "cart.html", "checkout.html"],
+        "e-commerce":    ["index.html", "products.html", "cart.html", "checkout.html"],
+        # Content
+        "blog":          ["index.html", "posts.html", "post.html", "about.html"],
+        "news":          ["index.html", "article.html", "contact.html", "about.html"],
+        "magazine":      ["index.html", "articles.html", "categories.html", "about.html"],
+        # Business
+        "business":      ["index.html", "services.html", "contact.html", "about.html"],
+        "company":       ["index.html", "services.html", "team.html", "contact.html"],
+        "agency":        ["index.html", "services.html", "portfolio.html", "contact.html"],
+        "startup":       ["index.html", "features.html", "pricing.html", "contact.html"],
+        # Medical
+        "hospital":      ["index.html", "appointments.html", "doctors.html", "contact.html"],
+        "clinic":        ["index.html", "appointments.html", "services.html", "contact.html"],
+        "health":        ["index.html", "services.html", "appointments.html", "contact.html"],
+        # Food
+        "restaurant":    ["index.html", "menu.html", "reservations.html", "contact.html"],
+        "recipe":        ["index.html", "recipes.html", "add_recipe.html", "favorites.html"],
+        "food":          ["index.html", "menu.html", "order.html", "contact.html"],
+        # Task/Project Management
+        "task":          ["index.html", "tasks.html", "add_task.html", "reports.html"],
+        "project":       ["index.html", "projects.html", "tasks.html", "team.html"],
+        "kanban":        ["index.html", "board.html", "tasks.html", "settings.html"],
+        # Social
+        "social":        ["index.html", "feed.html", "profile.html", "messages.html"],
+        "chat":          ["index.html", "conversations.html", "contacts.html", "settings.html"],
+        # Real estate
+        "real estate":   ["index.html", "listings.html", "property.html", "contact.html"],
+        "property":      ["index.html", "listings.html", "property.html", "contact.html"],
+        # Fitness
+        "fitness":       ["index.html", "workouts.html", "progress.html", "settings.html"],
+        "gym":           ["index.html", "classes.html", "schedule.html", "contact.html"],
+        # Travel
+        "travel":        ["index.html", "destinations.html", "booking.html", "contact.html"],
+        "hotel":         ["index.html", "rooms.html", "booking.html", "contact.html"],
+        # Portfolio/Personal
+        "portfolio":     ["index.html", "projects.html", "about.html", "contact.html"],
+        "resume":        ["index.html", "experience.html", "skills.html", "contact.html"],
+        # Dashboard
+        "dashboard":     ["index.html", "analytics.html", "reports.html", "settings.html"],
+        "admin":         ["index.html", "users.html", "settings.html", "reports.html"],
+        # Inventory
+        "inventory":     ["index.html", "products.html", "add_product.html", "reports.html"],
+        "warehouse":     ["index.html", "inventory.html", "shipments.html", "reports.html"],
+    }
+    
+    for keyword, pages in _DOMAIN_PAGES.items():
+        if keyword in task_lower:
+            return pages
+    
+    # Last resort: if "multi-page" or "pages" is mentioned but no domain matched
+    if "multi-page" in task_lower or "multiple pages" in task_lower:
+        return ["index.html", "about.html", "services.html", "contact.html"]
     
     return None
 
@@ -197,6 +393,66 @@ def _check_llm_availability() -> bool:
     """Check if any LLM provider is available via gateway."""
     from . import llm_gateway
     return llm_gateway.is_available()
+
+
+def _normalize_llm_steps(response: 'GatewayResponse') -> Optional[list]:
+    """FIX 2: Accept various step formats from LLM."""
+    raw_steps = None
+    
+    if response.structured:
+        if "items" in response.parsed:
+            raw_steps = response.parsed["items"]
+        elif "steps" in response.parsed:
+            raw_steps = response.parsed["steps"]
+        elif isinstance(response.parsed, list):
+            raw_steps = response.parsed
+    
+    if raw_steps is None and response.raw_output:
+        text = response.text
+        # Strip markdown fences if present
+        if "```" in text:
+            parts = text.split("```")
+            if len(parts) >= 3:
+                block = parts[1]
+                for lang in ["json", "javascript", "js"]:
+                    if block.lower().startswith(lang + "\n") or block.lower().startswith(lang + "\r\n"):
+                        block = block[len(lang)+1:].strip()
+                        break
+                text = block.strip()
+        
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                raw_steps = parsed
+            elif isinstance(parsed, dict) and "steps" in parsed:
+                raw_steps = parsed["steps"]
+            elif isinstance(parsed, dict) and "items" in parsed:
+                raw_steps = parsed["items"]
+        except Exception:
+            pass
+
+    if not isinstance(raw_steps, list):
+        return None
+        
+    valid_steps = []
+    for item in raw_steps:
+        if not isinstance(item, dict):
+            continue
+            
+        step = {}
+        # Map step_id to id
+        step["id"] = item.get("id", item.get("step_id", "step_000"))
+        step["description"] = item.get("description", item.get("desc", ""))
+        step["expected_outcome"] = item.get("expected_outcome", "")
+        
+        # Copy over any extra fields like target_file
+        for k, v in item.items():
+            if k not in ["id", "step_id", "description", "desc", "expected_outcome"]:
+                step[k] = v
+                
+        valid_steps.append(step)
+        
+    return valid_steps if valid_steps else None
 
 
 def _decompose_with_llm(core_task: str, context: dict) -> Optional[list]:
@@ -222,21 +478,8 @@ Output only valid JSON, no explanation."""
     )
     response = llm_gateway.generate(request)
 
-    if response.success and response.structured and "items" in response.parsed:
-        items = response.parsed["items"]
-        if isinstance(items, list):
-            valid_items = [item for item in items if isinstance(item, dict)]
-            if valid_items:
-                return valid_items
-    elif response.success and response.raw_output:
-        try:
-            steps = json.loads(response.text)
-            if isinstance(steps, list):
-                valid_steps = [item for item in steps if isinstance(item, dict)]
-                if valid_steps:
-                    return valid_steps
-        except (json.JSONDecodeError, TypeError):
-            pass
+    if response.success:
+        return _normalize_llm_steps(response)
     return None
 
 
@@ -298,14 +541,7 @@ Return ONLY a JSON array of step objects."""
     response = llm_gateway.generate(request)
 
     if response.success:
-        try:
-            if response.structured and "items" in response.parsed:
-                return response.parsed["items"]
-            parsed = response.parsed
-            if isinstance(parsed, list):
-                return parsed
-        except Exception:
-            pass
+        return _normalize_llm_steps(response)
     return None
 
 

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chotu AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <aside id="sidebar">
+            <div class="sidebar-header">
+                <h1>Chotu AI</h1>
+                <button id="new-task-btn" class="btn-primary">+ New Task</button>
+            </div>
+            <div id="task-list" class="task-list">
+                <!-- Task items populated by JS -->
+            </div>
+        </aside>
+
+        <main class="main-panel">
+            <header class="status-bar" id="status-bar">
+                <div class="status-indicator" id="internet-status">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Internet</span>
+                </div>
+                <div class="status-indicator" id="ollama-status">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Ollama</span>
+                </div>
+                <div class="status-indicator" id="models-status">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Models</span>
+                </div>
+                <div class="status-indicator" id="tools-status">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Tools</span>
+                </div>
+            </header>
+
+            <div class="content-area" id="content-area">
+                <div class="welcome-screen" id="welcome-screen">
+                    <h2>Welcome to Chotu AI</h2>
+                    <p>Enter a task below to get started</p>
+                    <div class="quick-hints">
+                        <div class="hint-item">• Create a Python script</div>
+                        <div class="hint-item">• Build a web page</div>
+                        <div class="hint-item">• Analyze data</div>
+                    </div>
+                </div>
+
+                <div class="chat-container" id="chat-container" style="display: none;">
+                    <div id="chat-messages"></div>
+                    <div id="step-cards"></div>
+                </div>
+
+                <div class="output-section" id="output-section" style="display: none;">
+                    <h3>Output Files</h3>
+                    <div id="output-files"></div>
+                </div>
+            </div>
+
+            <footer class="input-area">
+                <input type="text" id="task-input" placeholder="Describe your task..." autocomplete="off" disabled>
+                <button id="send-btn" class="btn-primary" disabled>Send</button>
+            </footer>
+        </main>
+    </div>
+
+    <div class="modal" id="preview-modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span id="preview-filename"></span>
+                <button class="btn-close" onclick="closePreview()">&times;</button>
+            </div>
+            <iframe id="preview-frame"></iframe>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

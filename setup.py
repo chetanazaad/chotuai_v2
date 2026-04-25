@@ -8,6 +8,10 @@ setup(
     author="chotu_ai",
     packages=find_packages(),
     python_requires=">=3.8",
+    install_requires=[
+        "fastapi>=0.100.0",
+        "uvicorn[standard]>=0.20.0",
+    ],
     entry_points={
         "console_scripts": [
             "chotu=chotu_ai.cli:main",

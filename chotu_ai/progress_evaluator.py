@@ -15,16 +15,11 @@ class ProgressReport:
 
 def evaluate(goal: dict, completed_results: dict = None,
             base_dir=None) -> ProgressReport:
-    """Evaluate progress toward the goal."""
+    """Evaluate progress toward the goal.
+    
+    FIX 2: Disabled LLM evaluation to save calls. Always use fallback.
+    """
     completed_results = completed_results or {}
-
-    try:
-        report = _evaluate_via_llm(goal, completed_results)
-        if report:
-            return report
-    except Exception:
-        pass
-
     return _evaluate_fallback(goal, completed_results)
 
 

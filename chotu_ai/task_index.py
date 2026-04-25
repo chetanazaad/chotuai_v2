@@ -19,7 +19,7 @@ def _save_tasks(tasks):
     with open(TASKS_FILE, "w", encoding="utf-8") as f:
         json.dump(tasks, f, indent=2)
 
-def add_task(task_id, task_name, output_dir):
+def add_task(task_id, task_name, output_dir, task_hash=""):
     """Add a new task to the index."""
     tasks = _load_tasks()
     
@@ -33,11 +33,23 @@ def add_task(task_id, task_name, output_dir):
         "task_name": task_name,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "output_dir": output_dir,
+        "task_hash": task_hash,
         "status": "running"
     }
     tasks.append(new_task)
     _save_tasks(tasks)
     print(f"[TASK INDEX] Added task: {task_id}")
+
+
+def get_task_by_hash(task_hash: str):
+    """Find existing task by hash, return first match or None."""
+    if not task_hash:
+        return None
+    tasks = _load_tasks()
+    for t in tasks:
+        if t.get("task_hash") == task_hash:
+            return t
+    return None
 
 def update_status(task_id, status):
     """Update task status in the index."""

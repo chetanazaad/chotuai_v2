@@ -62,6 +62,59 @@ footer { background: #eee; padding: 10px; text-align: center; }
 </style>
 """
 
+import re
+
+def _evolve_html_content(old_html: str, new_content: str, step_desc: str) -> str:
+    """FIX 3: Intelligently merge new content into an existing HTML file.
+    
+    - CSS: Injects into <head> or before </head>
+    - JS: Injects into <body> or before </body>
+    - HTML: Replaces <div class="content"> or body
+    """
+    desc = step_desc.lower()
+    
+    # CASE A: Adding CSS
+    if "css" in desc or "style" in desc or "styling" in desc:
+        css_payload = new_content.strip()
+        if not css_payload.startswith("<style"):
+            css_payload = f"<style>\n{css_payload}\n</style>"
+            
+        if "</head>" in old_html:
+            return old_html.replace("</head>", f"{css_payload}\n</head>")
+        elif "<body>" in old_html:
+            return old_html.replace("<body>", f"<body>\n{css_payload}")
+        else:
+            return old_html + "\n" + css_payload
+
+    # CASE B: Adding JavaScript
+    if "js" in desc or "javascript" in desc or "logic" in desc:
+        js_payload = new_content.strip()
+        if not js_payload.startswith("<script"):
+            js_payload = f"<script>\n{js_payload}\n</script>"
+            
+        if "</body>" in old_html:
+            return old_html.replace("</body>", f"{js_payload}\n</body>")
+        elif "</html>" in old_html:
+            return old_html.replace("</html>", f"{js_payload}\n</html>")
+        else:
+            return old_html + "\n" + js_payload
+
+    # CASE C: Updating HTML structure
+    if '<div class="content">' in old_html and '</div>' in old_html:
+        # Simple extraction of the new content body if it contains a full HTML page
+        if "<body" in new_content and "</body>" in new_content:
+            body_match = re.search(r'<body[^>]*>(.*?)</body>', new_content, re.DOTALL | re.IGNORECASE)
+            if body_match:
+                new_content = body_match.group(1).strip()
+                
+        parts = old_html.split('<div class="content">')
+        head = parts[0] + '<div class="content">\n'
+        tail = '</div>' + parts[1].split('</div>')[-1]
+        return head + new_content + tail
+        
+    # Fallback: Just return the new content if no obvious injection point
+    return new_content
+
 def plan(step: dict, state: dict, retry_context: Optional[dict] = None) -> PlanResult:
     """Main entry point. Returns a structured plan. Never raises."""
     from . import logger
@@ -124,7 +177,7 @@ def plan(step: dict, state: dict, retry_context: Optional[dict] = None) -> PlanR
         try:
             # STEP 2: MODIFY LLM PROMPT
             prompt = _build_llm_prompt(context)
-            raw_output = _call_llm(prompt)
+            raw_output = _call_llm(prompt, state=state)
             
             # STEP 3: BUILD ACTION MANUALLY
             if forced_action == "file_write":
@@ -135,16 +188,9 @@ def plan(step: dict, state: dict, retry_context: Optional[dict] = None) -> PlanR
                     existing_path = Path(default_path)
                     if existing_path.exists():
                         print(f"[TASK OUTPUT] Using existing folder: {output_dir}")
-                        print(f"[FILE UPDATE] Updating {existing_path.name}")
+                        print(f"[FILE UPDATE] Evolving {existing_path.name}...")
                         old_content = existing_path.read_text(encoding="utf-8")
-                        # Try to replace only the content div if it exists
-                        if '<div class="content">' in old_content and '</div>' in old_content:
-                            parts = old_content.split('<div class="content">')
-                            head = parts[0] + '<div class="content">\n'
-                            tail = '</div>' + parts[1].split('</div>')[-1]
-                            content = head + llm_content + tail
-                        else:
-                            content = llm_content # Fallback
+                        content = _evolve_html_content(old_content, llm_content, context.get("step_description", ""))
                     else:
                         # STEP 4: SYSTEM BUILDS FINAL FILE
                         final_content = f"""<html>
@@ -194,46 +240,108 @@ def plan(step: dict, state: dict, retry_context: Optional[dict] = None) -> PlanR
             )
         except Exception as e:
             planner_logger.log_event("info", f"[fallback] Control Layer error: {str(e)}")
+            print("[LLM STATUS] FAILED → fallback used")
             return _fallback_plan(step, context)
     
+    print("[LLM STATUS] FAILED → fallback used")
     return _fallback_plan(step, context)
 
-def _extract_content_from_llm(text: str) -> str:
-    """Extract raw content from LLM response, stripping markdown fences and JSON wrappers."""
-    text = text.strip()
+def normalize_llm_response(raw: str) -> str:
+    """Normalize ANY LLM response format into usable content.
     
-    # 1. If it's a JSON block, try to extract 'content' or 'command'
-    json_match = re.search(r'\{.*\}', text, re.DOTALL)
-    if json_match:
-        try:
-            import json
-            data = json.loads(json_match.group())
-            if isinstance(data, dict):
-                if "content" in data: return data["content"]
-                if "command" in data: return data["command"]
-                if "action" in data and isinstance(data["action"], dict):
-                    if "content" in data["action"]: return data["action"]["content"]
-                    if "command" in data["action"]: return data["command"]["command"]
-        except:
-            pass
-
-    # 2. Handle markdown blocks
+    Handles:
+      CASE 1: {"action": {"content": "..."}} or {"content": "..."}
+      CASE 2: {"steps": [...]} — joins step descriptions
+      CASE 3: ```json ... ``` or ```html ... ``` — strips markdown fences
+      CASE 4: Plain text — returned as-is for wrapping into file_write
+    
+    NEVER rejects a response unless it is truly empty.
+    """
+    if not raw or not raw.strip():
+        return ""
+    
+    text = raw.strip()
+    
+    # ── STEP 1: Strip markdown code fences first ──
     if "```" in text:
-        # Get the first block
         parts = text.split("```")
         if len(parts) >= 3:
             block = parts[1]
-            # Strip language tags
-            for lang in ["html", "python", "javascript", "json", "bash", "sh", "powershell"]:
+            # Strip language tags (```html, ```json, ```python, etc.)
+            for lang in ["html", "python", "javascript", "json", "bash", "sh", "powershell", "css", "js", "py"]:
                 if block.lower().startswith(lang + "\n"):
-                    block = block[len(lang)+1:]
+                    block = block[len(lang) + 1:]
                     break
-            # If the block itself is JSON, recurse or parse
-            if block.strip().startswith("{"):
-                return _extract_content_from_llm(block)
-            return block.strip()
-            
+                elif block.lower().startswith(lang + "\r\n"):
+                    block = block[len(lang) + 2:]
+                    break
+            text = block.strip()
+    
+    # ── STEP 2: Try JSON parsing ──
+    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            if isinstance(data, dict):
+                # Check for "action" wrapper or direct content/command
+                payload = data.get("action", data) if isinstance(data.get("action"), dict) else data
+                
+                if "content" in payload:
+                    return payload["content"]
+                if "command" in payload:
+                    return payload["command"]
+                if "code" in payload:
+                    return payload["code"]
+                if "html" in payload:
+                    return payload["html"]
+                
+                # CASE 2: {"steps": [...]} — join descriptions
+                if "steps" in data and isinstance(data["steps"], list):
+                    parts = []
+                    for s in data["steps"]:
+                        if isinstance(s, dict):
+                            parts.append(s.get("content", s.get("description", str(s))))
+                        else:
+                            parts.append(str(s))
+                    return "\n".join(parts)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    
+    # ── STEP 3: Fallback Parsing (FIX 1) ──
+    # If not valid JSON but contains code block -> Assume file_write (content only)
+    if "```" in raw:
+        parts = raw.split("```")
+        if len(parts) >= 3:
+            content = parts[1]
+            # Strip language tag
+            lines = content.split("\n")
+            if lines and not lines[0].strip().startswith(("{", "[")):
+                content = "\n".join(lines[1:]).strip()
+            return content
+
+    # ── STEP 4: Try JSON array ──
+    arr_match = re.search(r'\[.*\]', text, re.DOTALL)
+    if arr_match:
+        try:
+            arr = json.loads(arr_match.group())
+            if isinstance(arr, list) and len(arr) > 0:
+                parts = []
+                for item in arr:
+                    if isinstance(item, dict):
+                        parts.append(item.get("content", item.get("description", str(item))))
+                    else:
+                        parts.append(str(item))
+                return "\n".join(parts)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    
+    # ── STEP 5: Plain text — return as-is (NEVER discard) ──
     return text
+
+
+def _extract_content_from_llm(text: str) -> str:
+    """Extract raw content from LLM response. Delegates to normalize_llm_response."""
+    return normalize_llm_response(text)
 
 
 
@@ -284,6 +392,8 @@ def _build_context(step: dict, state: dict, retry_context: Optional[dict] = None
     issues = state.get("issues", [])
     recent_issues = issues[-2:] if len(issues) > 2 else issues
 
+    shared_layout = state.get("core_task", {}).get("shared_layout")
+
     return {
         "step_id": step.get("id", ""),
         "step_description": step.get("description", ""),
@@ -298,6 +408,7 @@ def _build_context(step: dict, state: dict, retry_context: Optional[dict] = None
         "retry_context": retry_context or {},
         "is_retry": step.get("retries", 0) > 0,
         "adaptive_hint_prompt": "",
+        "shared_layout": shared_layout,
     }
 
 
@@ -308,21 +419,67 @@ def _check_llm_availability() -> bool:
 
 
 def _call_llm(prompt: str, model: str = "phi3", purpose: str = "planning",
-              strategy: str = "", retry_count: int = 0, context: dict = None) -> str:
-    """Call LLM via gateway. Returns raw output text."""
+              strategy: str = "", retry_count: int = 0, context: dict = None, state: dict = None) -> str:
+    """FIX 1, 2 & 4: Strictly limited LLM Routing.
+    
+    Iteration 0: use primary model (phi3)
+    Iteration 1: use fallback model (qwen)
+    MAX 1 call per execution attempt.
+    """
     from . import llm_gateway
-    request = llm_gateway.GatewayRequest(
+    
+    step_id = (context or {}).get("step_id", "unknown")
+    
+    # FIX: MODEL LOCK & ROUTER INTERFERENCE
+    if state and state.get("selected_model"):
+        base_model = state["selected_model"]
+        if retry_count == 0:
+            print(f"[ROUTER SKIPPED] using user-selected model")
+    else:
+        # Determine consistent model for the task if not already set
+        if state and "task_model" not in state:
+            from . import model_router
+            decision = model_router.select_model(
+                purpose=purpose,
+                task_profile=(context or {}).get("task_profile", {}),
+                retry_count=0
+            )
+            state["task_model"] = decision.model
+        
+        base_model = state["task_model"] if state else model
+
+    # FIX 4: Strict priority routing
+    selected_model = base_model
+    if retry_count > 0 and not (state and state.get("selected_model")):
+        selected_model = "qwen:7b" if base_model == "phi3" else "phi3"
+        print(f"[MODEL SWITCH] {base_model} -> {selected_model} (retry)")
+    else:
+        print(f"[MODEL USED] {selected_model}")
+
+    req = llm_gateway.GatewayRequest(
         purpose=purpose,
         prompt=prompt,
         task_type="code",
-        preferred_provider=model if model != "llama3.2:latest" else "auto",
+        preferred_provider=selected_model,
         strategy=strategy,
         retry_count=retry_count,
         metadata={"task_profile": (context or {}).get("task_profile", {})},
+        use_cache=(retry_count == 0),
     )
-    response = llm_gateway.generate(request)
-    if response.success:
-        return response.raw_output
+    
+    if state is not None and "llm_usage" in state:
+        state["llm_usage"]["calls"] += 1
+        print(f"[LLM CALL COUNT] {step_id} = {retry_count + 1}")
+
+    try:
+        resp = llm_gateway.generate(req)
+        if resp.success and resp.raw_output.strip():
+            if state is not None and "llm_usage" in state:
+                state["llm_usage"]["success"] += 1
+            return resp.raw_output
+    except Exception as e:
+        print(f"[LLM ERROR] {selected_model} failed: {str(e)[:60]}")
+
     return ""
 
 
@@ -331,6 +488,7 @@ def _build_llm_prompt(context: dict) -> str:
     forced_action = context.get("forced_action", "file_write")
     default_path = context.get("default_path", "workspace/output.txt")
     is_website = context.get("is_website", False)
+    shared_layout = context.get("shared_layout")
     
     prompt = f"""You are an expert content generator for a technical task.
     
@@ -345,7 +503,25 @@ def _build_llm_prompt(context: dict) -> str:
     TARGET PATH: {default_path}
     """
 
-    if is_website and default_path.endswith(".html"):
+    if shared_layout and default_path.endswith(".html"):
+        layout = shared_layout
+        prompt += f"""
+    CRITICAL: This is a multi-page application with shared layout.
+    You MUST use the following shared components:
+    
+    HEADER (use exactly this):
+    {layout.get('header', '')}
+    
+    NAVBAR (use exactly this):
+    {layout.get('navbar', '')}
+    
+    FOOTER (use exactly this):
+    {layout.get('footer', '')}
+    
+    Include these components in your HTML output. Do NOT modify them.
+    The navbar MUST have links to ALL pages.
+    """
+    elif is_website and default_path.endswith(".html"):
         prompt += """
     IMPORTANT: This is a website task. 
     The system will handle the <html>, <head>, <header>, and <footer> sections.

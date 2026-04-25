@@ -21,6 +21,7 @@ def main():
     new_parser.add_argument("task", type=str, help="Task description")
     new_parser.add_argument("--working-dir", type=str, default=None, help="Working directory")
     new_parser.add_argument("--auto-run", action="store_true", help="Auto-run after creating task")
+    new_parser.add_argument("--force-new", action="store_true", help="Force new task folder, ignore deduplication")
 
     subparsers.add_parser("run", help="Resume execution")
 
@@ -77,6 +78,8 @@ def main():
 
     subparsers.add_parser("clean", help="System cleanup engine")
     
+    ui_parser = subparsers.add_parser("ui", help="Start web UI")
+    
     subparsers.add_parser("tasks", help="List all tasks")
     
     open_parser = subparsers.add_parser("open", help="Open task folder")
@@ -89,6 +92,7 @@ def main():
         "task": getattr(args, "task", ""),
         "working_dir": getattr(args, "working_dir", None),
         "auto_run": getattr(args, "auto_run", False),
+        "force_new": getattr(args, "force_new", False),
         "step_id": getattr(args, "step_id", None),
         "task_id": getattr(args, "task_id", None),
     }
@@ -132,6 +136,12 @@ def main():
                 removed = task_queue.clear_completed()
                 ui_renderer.render_message("success", f"Cleared {removed} completed/failed tasks")
                 sys.exit(0)
+
+        elif command == "ui":
+            import subprocess
+            server_path = Path(__file__).parent.parent / "run_server.py"
+            subprocess.Popen([sys.executable, str(server_path)])
+            sys.exit(0)
 
         elif command == "goal":
             goal_cmd = args.goal_command

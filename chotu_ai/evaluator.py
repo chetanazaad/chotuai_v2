@@ -23,8 +23,60 @@ _ERROR_SUGGESTIONS = {
 }
 
 
-def evaluate(exec_result, expected_outcome: Optional[str], state: dict) -> EvaluationResult:
-    """Main evaluation entry point."""
+def validate_output_artifacts(exec_result, action: dict, state: dict) -> Optional[EvaluationResult]:
+    """FIX 3: Validate generated file existence, size, and structure."""
+    if action.get("type") != "file_write":
+        return None
+        
+    path = action.get("path")
+    if not path:
+        return None
+        
+    if not os.path.exists(path):
+        return EvaluationResult(
+            verdict="fail",
+            reason=f"File not found: {path}",
+            suggestion="Verify file path and permissions",
+            error_type="infrastructure"
+        )
+        
+    if os.path.getsize(path) == 0:
+        return EvaluationResult(
+            verdict="fail",
+            reason=f"File is empty: {path}",
+            suggestion="Regenerate content with more detail",
+            error_type="runtime_error"
+        )
+        
+    # Check structure for common types
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+        if path.endswith(".html"):
+            if "<html>" not in content.lower() or "<body>" not in content.lower():
+                return EvaluationResult(
+                    verdict="fail",
+                    reason=f"Invalid HTML structure in {path}",
+                    suggestion="Ensure <html> and <body> tags are present",
+                    error_type="syntax_error"
+                )
+        if path.endswith(".js"):
+            if len(content.strip()) < 10:
+                return EvaluationResult(
+                    verdict="fail",
+                    reason=f"JS file too short/empty: {path}",
+                    suggestion="Check LLM output for code blocks",
+                    error_type="runtime_error"
+                )
+    except Exception:
+        pass
+        
+    return None
+
+def evaluate(exec_result, action: dict, expected_outcome: Optional[str], state: dict) -> EvaluationResult:
+    """Main evaluation entry point.
+    
+    FIX 3: Integrated output validation.
+    """
     if exec_result.timed_out:
         return EvaluationResult(
             verdict="error",
@@ -40,6 +92,11 @@ def evaluate(exec_result, expected_outcome: Optional[str], state: dict) -> Evalu
             suggestion=_ERROR_SUGGESTIONS.get(error_type, _ERROR_SUGGESTIONS["unknown"]),
             error_type=error_type
         )
+        
+    # FIX 3: Validation Layer
+    val_res = validate_output_artifacts(exec_result, action, state)
+    if val_res:
+        return val_res
     if expected_outcome is None:
         return EvaluationResult(
             verdict="pass",

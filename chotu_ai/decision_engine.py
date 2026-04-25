@@ -123,6 +123,10 @@ def decide(val_result, step: dict, state: dict) -> DecisionResult:
         analysis["knowledge_confidence"] = 0.0
 
     decision, strategy = _choose_strategy(analysis, step, state, retry_info)
+    
+    if decision in ("retry", "fix", "simplify", "evolve"):
+        print(f"[RETRY REASON] {analysis.get('failure_type', 'unknown')}: {val_result.reason}")
+        
     decision = _apply_guardrails(decision, analysis, retry_info)
 
     from . import improvement_engine
@@ -207,19 +211,12 @@ def _assess_severity(failure_type: str, val_result) -> str:
 
 
 def _check_retry_limit(step: dict, state: dict) -> dict:
+    """FIX 1: Hard limit retries to MAX 1 per step."""
     current = step.get("retries", 0)
     
-    task_profile = state.get("core_task", {}).get("task_profile", {})
-    is_simple = False
-    if isinstance(task_profile, dict):
-        is_simple = task_profile.get("complexity") == "low" and task_profile.get("domain") == "filesystem"
-    else:
-        is_simple = getattr(task_profile, "complexity", "") == "low" and getattr(task_profile, "domain", "") == "filesystem"
-        
-    if is_simple:
-        max_retries = 1
-    else:
-        max_retries = step.get("max_retries", 3)
+    # Strictly MAX 1 retry as per FIX 1 rules
+    max_retries = 1
+    
     config = state.get("config", {})
     total_retries = state.get("stats", {}).get("total_retries", 0)
     max_total = config.get("max_total_retries", 15)

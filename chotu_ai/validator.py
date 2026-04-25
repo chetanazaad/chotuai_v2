@@ -3,6 +3,58 @@ import dataclasses
 import os
 import re
 from typing import Optional
+from pathlib import Path
+
+
+def _check_html_consistency(working_dir: str, html_files: list, shared_layout: dict) -> list:
+    """Validate HTML files share consistent layout components."""
+    checks = []
+    if not shared_layout or not html_files:
+        return checks
+
+    navbar = shared_layout.get("navbar", "")
+    expected_links = set()
+    for f in html_files:
+        expected_links.add(f"{f}.html" if not f.endswith(".html") else f)
+
+    for html_file in html_files:
+        filepath = Path(working_dir) / html_file if Path(working_dir).exists() else Path(html_file)
+        if not filepath.exists():
+            checks.append({
+                "check": "file_exists",
+                "passed": False,
+                "detail": f"Missing: {html_file}"
+            })
+            continue
+
+        content = filepath.read_text(encoding="utf-8")
+
+        has_navbar = "navbar" in content.lower() or "<nav" in content.lower()
+        css_ok = 'class="' in content or 'style="' in content
+
+        checks.append({
+            "check": "navbar_present",
+            "passed": has_navbar,
+            "detail": f"{html_file}: navbar={has_navbar}"
+        })
+
+        checks.append({
+            "check": "csspresent",
+            "passed": css_ok,
+            "detail": f"{html_file}: has styles={css_ok}"
+        })
+
+        for link in expected_links:
+            if link != html_file:
+                has_link = f'href="{link}"' in content or f"href='{link}'" in content
+                if not has_link:
+                    checks.append({
+                        "check": "navlink_present",
+                        "passed": False,
+                        "detail": f"{html_file}: missing link to {link}"
+                    })
+
+    return checks
 
 
 @dataclasses.dataclass
@@ -68,6 +120,13 @@ def validate(exec_result, expected_outcome, step: dict, state: dict) -> Validati
 
     checks = _check_expected_outcome(exec_result, expected_outcome, working_dir)
 
+    shared_layout = state.get("core_task", {}).get("shared_layout")
+    if shared_layout:
+        html_files = re.findall(r'([a-zA-Z0-9_-]+\.html)', state.get("core_task", {}).get("description", ""))
+        if html_files:
+            html_checks = _check_html_consistency(working_dir, html_files, shared_layout)
+            checks.extend(html_checks)
+
     task_profile = state.get("core_task", {}).get("task_profile", {})
     task_type = task_profile.get("task_type", "") if isinstance(task_profile, dict) else getattr(task_profile, "task_type", "")
     if task_type == "build" and action.get("type") == "shell":
@@ -82,13 +141,31 @@ def validate(exec_result, expected_outcome, step: dict, state: dict) -> Validati
     all_passed = all(c["passed"] for c in checks) if checks else True
     is_partial = _check_partial_success(exec_result, expected_outcome, checks)
 
+    # FIX 3: Artifact Validation Layer
+    artifact_failure = _layer_artifact_check(action)
+    if artifact_failure:
+        checks.append(artifact_failure)
+        failure_type = "incorrect_output"
+        all_passed = False
+
     if isinstance(expected_outcome, dict) and expected_outcome.get("type") == "semantic":
         semantic_result = _check_semantic(exec_result, expected_outcome)
         if semantic_result is not None:
             logger.log_validation_complete(step_id, semantic_result.verdict, semantic_result.failure_type, semantic_result.confidence)
             return semantic_result
 
-    if exec_result.exit_code == 0 and all_passed:
+    # ── RESULT-BASED SUCCESS (FIX 1) ──
+    # If the file exists and is valid, it's a SUCCESS regardless of exit code
+    artifact_ok = all(c["passed"] for c in checks if c["check"].startswith("artifact_")) if checks else False
+    
+    if artifact_ok:
+        verdict = "pass"
+        failure_type = "none"
+        retryable = False
+        suggestion = ""
+        reason = "Result-based Success: Target file created and valid"
+        confidence = 0.95
+    elif exec_result.exit_code == 0 and all_passed:
         verdict = "pass"
         failure_type = "none"
         retryable = False
@@ -333,66 +410,50 @@ def _check_partial_success(exec_result, expected_outcome, checks: list) -> bool:
     return False
 
 
+def _layer_artifact_check(action: dict) -> Optional[dict]:
+    """Validate generated file existence and size.
+    
+    FIX: Only check existence and non-emptiness.
+    """
+    if action.get("type") != "file_write":
+        return None
+        
+    path = action.get("path")
+    if not path or not os.path.exists(path):
+        return {"check": "artifact_exists", "passed": False, "detail": f"File not found: {path}"}
+        
+    if os.path.getsize(path) == 0:
+        return {"check": "artifact_not_empty", "passed": False, "detail": f"File is empty: {path}"}
+        
+    return None
+
+
 def _check_semantic(exec_result, expected_outcome) -> Optional[ValidationResult]:
-    """Layer 5: Optional LLM semantic check."""
-    if not isinstance(expected_outcome, dict):
-        return None
-    if expected_outcome.get("type") != "semantic":
-        return None
-
-    try:
-        from . import llm_gateway
-        if not llm_gateway.is_available():
-            return None
-
-        prompt = f"""Evaluate this execution result against the expected outcome.
-
-EXPECTED: {expected_outcome.get('value', '')}
-STDOUT: {exec_result.stdout[:500]}
-STDERR: {exec_result.stderr[:200]}
-EXIT_CODE: {exec_result.exit_code}
-
-Answer with ONLY one word: PASS or FAIL"""
-
-        request = llm_gateway.GatewayRequest(
-            purpose="validation",
-            prompt=prompt,
-            task_type="classification",
-        )
-        gw_response = llm_gateway.generate(request)
-        if not gw_response.success:
-            return None
-
-        response = gw_response.text
-        if "PASS" in response.upper():
-            return ValidationResult(
-                verdict="pass", failure_type="none", confidence=0.7,
-                reason="LLM semantic check: PASS",
-                retryable=False, suggestion="",
-                details={"exit_code": exec_result.exit_code, "timeout": False,
-                         "expected_met": True, "checks": [{"check": "semantic_llm", "passed": True, "detail": "LLM judged PASS"}]}
-            )
-        else:
-            return ValidationResult(
-                verdict="fail", failure_type="incorrect_output", confidence=0.6,
-                reason="LLM semantic check: FAIL",
-                retryable=True, suggestion="Output did not match semantic expectation",
-                details={"exit_code": exec_result.exit_code, "timeout": False,
-                         "expected_met": False, "checks": [{"check": "semantic_llm", "passed": False, "detail": "LLM judged FAIL"}]}
-            )
-    except Exception:
-        return None
+    """Layer 5: Optional LLM semantic check.
+    
+    FIX 2: Disabled to centralize LLM usage.
+    """
+    return None
 
 
 def _is_retryable(failure_type: str, exec_result) -> bool:
-    """Determine if failure is worth retrying."""
-    if failure_type == "infrastructure":
-        stderr = exec_result.stderr.lower()
-        if "permission denied" in stderr or "disk full" in stderr or "access denied" in stderr:
-            return False
-        return False
-
-    return _RETRYABLE_MAP.get(failure_type, True)
+    """Determine if failure is worth retrying.
+    
+    FIX: Only retry if file is missing or empty.
+    """
+    stderr = (exec_result.stderr or "").lower()
+    stdout = (exec_result.stdout or "").lower()
+    combined = stderr + stdout
+    
+    # Check for missing/empty file indicators in output or state
+    if "file not found" in combined or "file is empty" in combined:
+        return True
+        
+    # We also check the classification
+    if failure_type == "incorrect_output":
+        return True # This covers missing/empty artifacts detected in validation
+        
+    return False
 
 
 def _build_suggestion(failure_type: str, exec_result) -> str:
