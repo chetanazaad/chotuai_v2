@@ -1,16 +1,48 @@
 """Append-only structured logging for every event. Never overwrites."""
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 _runtime_dir: Optional[Path] = None
+_masked_value = "sk-******"
+_event_hooks: list = []
 
 
-def init(runtime_dir: Path) -> None:
-    """Set the runtime directory for all log files."""
+def register_hook(fn) -> None:
+    """Register a hook to be called on each log event."""
+    if fn not in _event_hooks:
+        _event_hooks.append(fn)
+
+
+def unregister_hook(fn) -> None:
+    """Unregister a log event hook."""
+    if fn in _event_hooks:
+        _event_hooks.remove(fn)
+
+
+def init(runtime_dir: str) -> None:
+    """Initialize the logger with a runtime directory."""
     global _runtime_dir
-    _runtime_dir = runtime_dir
+    _runtime_dir = Path(runtime_dir)
+    _runtime_dir.mkdir(parents=True, exist_ok=True)
+    (_runtime_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+
+def sanitize_payload(data: str, api_key: str = "") -> str:
+    """Scrub sensitive data from payloads before logging."""
+    if not data:
+        return data
+    masked = _masked_value
+    result = data
+    if api_key and len(api_key) > 4:
+        result = re.sub(re.escape(api_key), masked, result)
+    result = re.sub(r'Bearer\s+[A-Za-z0-9\-_\.]+', f'Bearer {masked}', result)
+    result = re.sub(r'x-api-key:\s*[A-Za-z0-9\-_\.]+', f'x-api-key: {masked}', result, flags=re.IGNORECASE)
+    result = re.sub(r'"api_key"\s*:\s*"[^"]+"', f'"api_key": "{masked}"', result)
+    result = re.sub(r'"key"\s*:\s*"[^"]+"', f'"key": "{masked}"', result)
+    return result
 
 
 def _get_runtime_dir() -> Path:
@@ -49,6 +81,12 @@ def log_event(event_type: str, message: str, payload: dict = None, task_id: str 
         "message": message,
         "payload": payload or {}
     }
+    for hook in _event_hooks:
+        try:
+            hook(record)
+        except Exception:
+            pass
+
     events_file = _get_runtime_dir() / "events.jsonl"
     with _open_append(events_file):
         with open(events_file, "a", encoding="utf-8") as f:

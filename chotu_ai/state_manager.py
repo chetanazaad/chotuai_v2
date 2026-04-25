@@ -1,7 +1,9 @@
 """Pure state I/O and validation. Zero business logic."""
 import json
 import os
+import re
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -33,6 +35,12 @@ def sanitize_task_name(task_text: str) -> str:
     clean = re.sub(r'[^a-zA-Z0-9\s]', '', task_text)
     words = clean.split()[:3]
     return "_".join(words).lower()
+
+
+def get_task_hash(task_description: str) -> str:
+    """Compute deterministic hash for task deduplication."""
+    normalized = re.sub(r'\s+', ' ', task_description.lower()).strip()
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
 def create_fresh_state(core_task: str, working_dir: Optional[str] = None) -> dict:
@@ -84,6 +92,10 @@ def create_fresh_state(core_task: str, working_dir: Optional[str] = None) -> dic
             "step_timeout_seconds": 60,
             "working_directory": working_dir or ".",
             "runtime_dir": ".chotu"
+        },
+        "llm_usage": {
+            "calls": 0,
+            "success": 0
         }
     }
 

@@ -1,15 +1,15 @@
 # chotu_ai System Status
 
-## Current Version: 2.9.2 | Last Updated: 2026-04-25
+## Current Version: 3.0.0 | Last Updated: 2026-04-25
 
 ### Quick Summary
-- 42 modules, ~12,800 lines
-- **Hybrid Planning System** (Base plan + LLM refinement)
-- **Desktop GUI** (Tkinter application)
-- **LLM Response Cache** (FIFO 100 entries)
+- 48 modules, ~14,500 lines
+- **Web UI** (FastAPI + browser interface)
+- **Hybrid LLM Routing** (Local + Cloud)
+- **Task Deduplication** (SHA256 hash)
+- **Multi-page Layout System** (Shared HTML)
 - **Output directory: output/** (Unified)
-- Non-blocking LLM (5s timeout)
-- Full safety controls
+- Non-blocking LLM with cloud failover
 - Real-time execution visibility
 
 ### Key Commands
@@ -20,22 +20,33 @@
 | `chotu status` | Check status |
 | `chotu cache` | LLM cache stats |
 | `chotu log <task_id>` | View task log |
+| `chotu ui` | Start web UI |
+| `chotu new "<task>" --force-new` | Force new task (dedup override) |
 
 ### What's Working
-- **Desktop GUI** (`python ui_app.py`)
-  - Dark theme Tkinter application
-  - Live output streaming with color-coded logs
-  - Progress bar and step tracker
+- **Web UI** (`chotu ui` or `python run_server.py`)
+  - Browser-based interface at http://localhost:8000
+  - Dark theme with sidebar + chat panels
+  - System status bar (internet, ollama, models, tools)
+  - Task list in sidebar with status badges
+  - Real-time log polling during execution
+  - HTML file preview in modal
   - Past tasks dropdown
-  - Action buttons: Open Output, View Logs, Stop, Clear
-- **LLM Performance Layer**
-  - Response cache (FIFO 100 entries)
-  - Adaptive timeouts: phi3=5s, qwen:7b=10s
-  - Model load caching (60s TTL)
-  - Fast fail: switches model on timeout
-  - Prompt compression (2000 char limit)
-- **Real-Time Visibility**
-  - `log_visibility()` to `.chotu/logs/<task_id>.log`
+- **Hybrid LLM Routing**
+  - Local: phi3, qwen:7b (Ollama on port 11434)
+  - Cloud: gemini (Google Generative Language API)
+  - Complexity-based routing: high complexity → cloud
+  - Cross-type failover: local ↔ cloud on failure
+  - Config: `.chotu/config.json`
+- **Task Deduplication**
+  - SHA256 hash (persistent across sessions)
+  - `--force-new` flag to override
+  - Reuses existing output directory
+- **Multi-page Layout**
+  - Automatic HTML file detection
+  - Shared layout generation (header, navbar, footer)
+  - Layout injection in LLM prompts
+  - Consistency validation (navbar links)
   - `[STEP START/DONE]` progress bars
   - `[ACTION]`, `[ERROR]`, `[RECOVERY]` logs
   - Task summary with LLM call counts
@@ -63,6 +74,7 @@
 | 2.9.0 | 36 | 2026-04-25 | LLM Performance Layer |
 | 2.9.1 | 37 | 2026-04-25 | Real-Time Visibility |
 | 2.9.2 | 38 | 2026-04-25 | **Desktop GUI** |
+| 3.0.0 | 39 | 2026-04-25 | **Web UI + Hybrid LLM + Deduplication** |
 
 ---
 
@@ -1674,6 +1686,89 @@ Built a standalone Tkinter desktop application for controlling chotu_ai without 
 - [x] Thread-safe subprocess execution
 
 ---
+
+## Phase 39: Web UI + Hybrid LLM + Task Deduplication (v3.0.0)
+
+### Overview
+Major release: Web browser interface, Hybrid LLM Routing (local + cloud), Task deduplication via SHA256 hash, and Multi-page HTML layout system.
+
+### Changes
+| File | Change |
+|------|-------|
+| `system_check.py` | **[NEW]** — System readiness probes (internet, ollama, models, tools) |
+| `api_server.py` | **[NEW]** — FastAPI backend with task endpoints |
+| `run_server.py` | **[NEW]** — Web server entry point |
+| `frontend/index.html` | **[NEW]** — UI shell with sidebar + panels |
+| `frontend/styles.css` | **[NEW]** — Dark theme design system |
+| `frontend/app.js` | **[NEW]** — REST client + DOM manipulation |
+| `llm_gateway.py` | Added gemini cloud provider, config loading, `_call_cloud()`, cross-type failover |
+| `model_router.py` | Added complexity-based cloud routing |
+| `logger.py` | Added `_event_hooks` for real-time streaming |
+| `state_manager.py` | Added `get_task_hash()` using SHA256 |
+| `task_index.py` | Added `task_hash` to `add_task()`, `get_task_by_hash()` |
+| `cli.py` | Added `--force-new` flag and `chotu ui` command |
+| `controller.py` | Added readiness check, task deduplication, shared layout generation |
+| `planner.py` | Added shared_layout injection for HTML prompts |
+| `validator.py` | Added `_check_html_consistency()` for multi-page validation |
+| `setup.py` | Added fastapi/uvicorn dependencies |
+
+### Features
+
+#### Web UI
+- [x] Browser-based interface (http://localhost:8000)
+- [x] System status bar (internet, ollama, models, tools)
+- [x] Task sidebar with list
+- [x] Chat interface with execution cards
+- [x] Real-time log polling
+- [x] HTML file preview in iframe
+- [x] Start via `chotu ui`
+
+#### Hybrid LLM Routing
+- [x] Local providers: phi3, qwen:7b (Ollama)
+- [x] Cloud provider: gemini (Google)
+- [x] Config file: `.chotu/config.json`
+- [x] Complexity-based routing: high → cloud
+- [x] Cross-type failover: local ↔ cloud
+- [x] Debug logging: `[MODEL ROUTER]`, `[LLM]`, `[FAILOVER]`
+- [x] API key sanitization in logs
+
+#### Task Deduplication
+- [x] SHA256 deterministic hashing (persistent across sessions)
+- [x] `--force-new` flag to override
+- [x] `[TASK REUSED]` message when deduplicating
+- [x] Reuses existing output directory
+
+#### Multi-page Layout System
+- [x] Automatic HTML file detection in task
+- [x] Shared layout generation via LLM (header, navbar, footer)
+- [x] Layout injection in planner prompts
+- [x] Consistency validation (navbar links, CSS)
+
+### Configuration (.chotu/config.json)
+```json
+{
+  "use_cloud": false,
+  "cloud_provider": "gemini",
+  "api_key": "your-api-key",
+  "fallback_enabled": true
+}
+```
+
+### Usage
+```bash
+# Start web UI
+chotu ui
+
+# Task with deduplication (default)
+chotu new "create a python file that prints hello world"
+chotu new "create a python file that prints hello world"  # Uses existing folder
+
+# Force new task
+chotu new "create a python file that prints hello world" --force-new
+
+# Multi-page HTML app
+chotu new "Build a Personal Finance Tracker with index.html, transactions.html, analytics.html" --force-new
+```
 
 **Status**: Operational - Desktop GUI Active
 **Version**: 2.9.2

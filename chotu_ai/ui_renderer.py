@@ -26,6 +26,7 @@ _STEP_ICONS = {
 
 _RESULT_CONFIG = {
     "pass": {"icon": "✅", "label": "PASS"},
+    "partial_success": {"icon": "⚠️", "label": "PARTIAL SUCCESS"},
     "fail": {"icon": "❌", "label": "FAIL"},
     "partial": {"icon": "⚠️", "label": "PARTIAL"},
     "skip": {"icon": "⏭", "label": "SKIP"},
@@ -272,6 +273,8 @@ def render_message(level: str, text: str) -> None:
     icons = {"error": "❌", "warning": "⚠️", "info": "ℹ️", "success": "✅"}
     icon = icons.get(level, "")
     print(f"  {icon} {text}")
+    if level == "warning":
+        print(f"  [RESULT] Review output folder for low-quality generations.")
 
 
 def render_queue_list(tasks: list) -> None:

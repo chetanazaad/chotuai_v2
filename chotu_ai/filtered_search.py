@@ -46,11 +46,9 @@ def search(request: SearchRequest) -> SearchResponse:
 
     all_results = []
 
-    try:
-        llm_results = _search_via_llm(request.query, request.context)
-        all_results.extend(llm_results)
-    except Exception:
-        pass
+    # FIX 2: LLM should ONLY be called in planning/execution phases.
+    # LLM-based search is disabled to save calls.
+    pass
 
     try:
         ddg_results = _search_via_duckduckgo(request.query)
