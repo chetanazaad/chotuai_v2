@@ -7,12 +7,24 @@ from typing import Optional
 
 
 def decompose(core_task: str, context: Optional[dict] = None) -> list:
-    """Hybrid decomposition: System base plan + LLM refinement.
-    
-    FIX 1: Limit LLM attempts to MAX 2 (phi3 -> qwen).
-    """
+    """Hybrid decomposition: System base plan + LLM refinement."""
     context = context or {}
     task_lower = core_task.lower()
+    print(f"[DECOMPOSER] Analyzing task: {task_lower}")
+
+    # 0. Template check (INSTANT)
+    if "calculator" in task_lower:
+        print("[DECOMPOSER] Using template: calculator")
+        return [
+            {"id": "step_001", "description": "Create index.html with the basic HTML structure, linking to styles.css and scripts.js", "target_file": "index.html", "expected_outcome": "index.html created"},
+            {"id": "step_002", "description": "Create styles.css with professional dark-mode CSS for the calculator", "target_file": "styles.css", "expected_outcome": "styles.css created"},
+            {"id": "step_003", "description": "Create scripts.js with functional arithmetic logic for the calculator", "target_file": "scripts.js", "expected_outcome": "scripts.js created"}
+        ]
+    if "hello" in task_lower and ("html" in task_lower or "page" in task_lower):
+        print("[DECOMPOSER] Using template: hello_page")
+        return [
+            {"id": "step_001", "description": "Create index.html with 'Hello I am Ready' and styling", "expected_outcome": "File created"}
+        ]
     
     task_profile = context.get("task_profile", {})
     if isinstance(task_profile, dict):
@@ -146,20 +158,21 @@ def _enforce_minimum_steps(plan: list, core_task: str, task_lower: str) -> list:
       - Structure (HTML)
       - Styling (CSS)
       - Logic (JS/Python)
-      - Integration/Testing
+      # Keywords that trigger multi-step build logic
     """
-    BUILD_KEYWORDS = ["build", "create", "app", "system", "calculator", "converter",
-                      "dashboard", "website", "portal", "tracker", "manager"]
+    BUILD_KEYWORDS = ["app", "system", "calculator", "converter",
+                      "dashboard", "website", "portal", "tracker", "manager",
+                      "web", "page", "landing"]
     
-    is_build = any(kw in task_lower for kw in BUILD_KEYWORDS)
-    if not is_build:
+    is_complex_build = any(kw in task_lower for kw in BUILD_KEYWORDS)
+    if not is_complex_build:
         return plan
     
     # If already has enough steps, don't interfere
     if len(plan) >= 3:
         return plan
     
-    print(f"[DECOMPOSER] Enforcing multi-step plan for build task ({len(plan)} -> 4+ steps)")
+    print(f"[DECOMPOSER] Enforcing multi-step plan for complex build task ({len(plan)} -> 4+ steps)")
     
     # Determine the primary output file
     target = "index.html"
@@ -455,31 +468,50 @@ def _normalize_llm_steps(response: 'GatewayResponse') -> Optional[list]:
     return valid_steps if valid_steps else None
 
 
-def _decompose_with_llm(core_task: str, context: dict) -> Optional[list]:
-    """Try LLM decomposition via gateway."""
+def _decompose_with_llm(core_task: str, context: dict, model: Optional[str] = None) -> Optional[list]:
+    """Try LLM decomposition via gateway with a reasoning-first prompt."""
     from . import llm_gateway, logger
 
-    logger.log_event("debug", "[PLANNER] Using LLM for task decomposition")
+    logger.log_event("debug", f"[PLANNER] Using LLM ({model or 'default'}) for reasoning-first decomposition")
 
-    prompt = f"""You are a task decomposer. Break down the following task into atomic steps.
-Return ONLY a JSON array of step objects. Each step object must have:
-- id: step_NNN (e.g., step_001)
-- description: short description
-- expected_outcome: what success looks like
+    prompt = f"""You are a reasoning-first technical task planner.
+Your goal is to transform a natural language request into an efficient, executable technical plan.
 
-Task: {core_task}
+TASK: {core_task}
 
-Output only valid JSON, no explanation."""
+INSTRUCTIONS:
+1. THINK: Analyze the underlying requirements. What files, languages, and logic are needed?
+2. PLAN: Break the task into a logical sequence of atomic steps.
+3. OUTPUT: Provide ONLY a JSON object with your reasoning and the steps.
+
+JSON FORMAT:
+{{
+  "thought": "Your concise analysis of the task requirements and architecture.",
+  "steps": [
+    {{
+      "id": "step_001",
+      "description": "Clear, actionable technical instruction",
+      "expected_outcome": "Specific evidence of success"
+    }}
+  ]
+}}
+
+Return ONLY the JSON. No conversational filler."""
 
     request = llm_gateway.GatewayRequest(
         purpose="decomposition",
         prompt=prompt,
         task_type="structured",
+        preferred_provider=model
     )
     response = llm_gateway.generate(request)
 
     if response.success:
-        return _normalize_llm_steps(response)
+        steps = _normalize_llm_steps(response)
+        if steps and response.parsed and "thought" in response.parsed:
+             # Log the thought process to the console for transparency
+             print(f"\n[PLANNER THOUGHTS]\n{response.parsed['thought']}\n")
+        return steps
     return None
 
 
@@ -601,11 +633,6 @@ Output only valid JSON, no explanation."""
     )
     response = llm_gateway.generate(request)
 
-    if response.success and response.structured:
-        return response.parsed
-    return None
-
-
 def _decompose_fallback(core_task: str, context: dict) -> list:
     """Fallback decomposition using keyword-based rules."""
     task_lower = core_task.lower()
@@ -685,22 +712,24 @@ def _decompose_fallback(core_task: str, context: dict) -> list:
             "expected_outcome": ""
         })
     else:
+        # Improved fallback: use part of the original task in the description
+        task_snippet = (core_task[:50] + '...') if len(core_task) > 50 else core_task
         todo_list.append({
             "id": f"step_{step_num:03d}",
-            "description": "Analyze requirements",
-            "expected_outcome": ""
+            "description": f"Analyze requirements for: {task_snippet}",
+            "expected_outcome": "Requirements understood"
         })
         step_num += 1
         todo_list.append({
             "id": f"step_{step_num:03d}",
-            "description": "Execute the task",
-            "expected_outcome": ""
+            "description": f"Implement the task: {core_task}",
+            "expected_outcome": "Task implemented as per requirements"
         })
         step_num += 1
         todo_list.append({
             "id": f"step_{step_num:03d}",
-            "description": "Verify result",
-            "expected_outcome": ""
+            "description": f"Verify results for: {task_snippet}",
+            "expected_outcome": "Results verified and correct"
         })
     return todo_list
 

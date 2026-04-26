@@ -8,33 +8,47 @@ from typing import List, Tuple
 def run_preflight(selected_model: str = "qwen:7b") -> Tuple[bool, List[str]]:
     """
     Run a battery of system checks.
-    Returns (success, error_messages).
+    Returns (success, messages).
     """
-    errors = []
+    messages = []
+    import os
     
-    # 1. Check Internet Connection
-    if not _check_internet():
-        errors.append("Internet connection unavailable. Please check your network.")
-        
-    # 2. Check Ollama Server
+    # 1. Infrastructure (CRITICAL)
     ollama_ok, ollama_msg = _check_ollama_server()
     if not ollama_ok:
-        errors.append(ollama_msg)
+        messages.append(f"❌ Ollama: {ollama_msg}")
+        return False, messages
+    messages.append("✅ Ollama: Running")
+        
+    if not _check_model_present(selected_model):
+        messages.append(f"❌ Model: '{selected_model}' not found.")
+        return False, messages
+    messages.append(f"✅ Model: {selected_model} available")
+
+    # 2. Connectivity & Cloud (OPTIONAL)
+    if _check_internet():
+        messages.append("✅ Internet: Connected")
     else:
-        # 3. Check Selected Model
-        if not _check_model_present(selected_model):
-            errors.append(f"Selected model '{selected_model}' is not installed in Ollama. Run 'ollama pull {selected_model}'.")
+        messages.append("⚠️ Internet: Offline (Local tools only)")
+
+    cloud_apis = []
+    if os.environ.get("GEMINI_API_KEY"): cloud_apis.append("Gemini")
+    if os.environ.get("OPENAI_API_KEY"): cloud_apis.append("OpenAI")
+    if os.environ.get("ANTHROPIC_API_KEY"): cloud_apis.append("Anthropic")
+    
+    if cloud_apis:
+        messages.append(f"✅ Cloud APIs: {', '.join(cloud_apis)}")
+    else:
+        messages.append("⚠️ Cloud APIs: None configured")
+
+    # 3. Scraping & Tools (OPTIONAL)
+    scraper_ok = _check_dependency("bs4") and _check_dependency("requests")
+    if scraper_ok:
+        messages.append("✅ Scraper: Ready (bs4/requests)")
+    else:
+        messages.append("⚠️ Scraper: Missing dependencies")
             
-    # 4. Check Key Dependencies
-    deps = [
-        ("bs4", "BeautifulSoup4 (pip install beautifulsoup4)"),
-        ("requests", "Requests (pip install requests)")
-    ]
-    for module_name, install_name in deps:
-        if not _check_dependency(module_name):
-            errors.append(f"Missing dependency: {install_name}")
-            
-    return len(errors) == 0, errors
+    return True, messages
 
 def _check_internet(timeout=3) -> bool:
     """Check if internet is reachable."""
@@ -47,15 +61,41 @@ def _check_internet(timeout=3) -> bool:
         return False
 
 def _check_ollama_server() -> Tuple[bool, str]:
-    """Check if Ollama server is reachable."""
+    """Check if Ollama server is reachable, try to start if not."""
+    url = "http://localhost:11434/api/tags"
+    
+    # Try once
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            if resp.status == 200:
-                return True, ""
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=1) as resp:
+            if resp.status == 200: return True, ""
     except Exception:
         pass
-    return False, "Ollama server is not running at http://localhost:11434. Please start it."
+
+    # Try starting it
+    try:
+        import time
+        import sys
+        print("[SYSTEM CHECK] Ollama not found. Attempting auto-start...")
+        subprocess.Popen(
+            ["ollama", "serve"],
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Wait up to 5 seconds for it to wake up
+        for _ in range(5):
+            time.sleep(1)
+            try:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=1) as resp:
+                    if resp.status == 200: return True, ""
+            except Exception:
+                continue
+    except Exception as e:
+        return False, f"Failed to start Ollama: {e}"
+
+    return False, "Ollama server is not running and could not be auto-started. Please open Ollama manually."
 
 def _check_model_present(model_name: str) -> bool:
     """Check if a specific model is installed in Ollama."""

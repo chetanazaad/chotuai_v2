@@ -2,7 +2,7 @@
 import dataclasses
 import os
 import re
-from typing import Optional
+from typing import Optional, Tuple, List
 from pathlib import Path
 
 
@@ -106,9 +106,11 @@ def validate(exec_result, expected_outcome, step: dict, state: dict) -> Validati
         action = {"type": "unknown", "command": str(action)}
 
     if action.get("type") == "file_write":
+        # Resolve the actual file path that executor uses
+        target_file = action.get("target_file") or action.get("path") or action.get("file") or "output.html"
         expected_outcome = {
             "type": "file_exists",
-            "path": action.get("path", "output.txt")
+            "path": target_file
         }
 
     logger.log_validation_start(step_id)
@@ -118,7 +120,8 @@ def validate(exec_result, expected_outcome, step: dict, state: dict) -> Validati
         logger.log_validation_complete(step_id, hard_result.verdict, hard_result.failure_type, hard_result.confidence)
         return hard_result
 
-    checks = _check_expected_outcome(exec_result, expected_outcome, working_dir)
+    output_dir = state.get("core_task", {}).get("output_dir", "output")
+    checks = _check_expected_outcome(exec_result, expected_outcome, working_dir, output_dir)
 
     shared_layout = state.get("core_task", {}).get("shared_layout")
     if shared_layout:
@@ -142,7 +145,7 @@ def validate(exec_result, expected_outcome, step: dict, state: dict) -> Validati
     is_partial = _check_partial_success(exec_result, expected_outcome, checks)
 
     # FIX 3: Artifact Validation Layer
-    artifact_failure = _layer_artifact_check(action)
+    artifact_failure = _layer_artifact_check(action, output_dir)
     if artifact_failure:
         checks.append(artifact_failure)
         failure_type = "incorrect_output"
@@ -245,7 +248,7 @@ def _check_hard_execution(exec_result) -> Optional[ValidationResult]:
     return None
 
 
-def _check_expected_outcome(exec_result, expected_outcome, working_dir) -> list:
+def _check_expected_outcome(exec_result, expected_outcome, working_dir, output_dir: str = "output") -> list:
     """Layer 2: Expected outcome checks."""
     checks = []
 
@@ -290,8 +293,14 @@ def _check_expected_outcome(exec_result, expected_outcome, working_dir) -> list:
 
         if exp_type == "file_exists":
             path = expected_outcome.get("path", "")
-            full_path = os.path.join(working_dir, path) if working_dir else path
-            exists = os.path.exists(path) or os.path.exists(full_path)
+            # Check multiple potential locations
+            potential_paths = [
+                path,
+                os.path.join(output_dir, os.path.basename(path)),
+                os.path.join(output_dir, path),
+                os.path.join(working_dir, path) if working_dir else ""
+            ]
+            exists = any(os.path.exists(p) for p in potential_paths if p)
             checks.append({
                 "check": "file_exists",
                 "passed": exists,
@@ -410,7 +419,7 @@ def _check_partial_success(exec_result, expected_outcome, checks: list) -> bool:
     return False
 
 
-def _layer_artifact_check(action: dict) -> Optional[dict]:
+def _layer_artifact_check(action: dict, output_dir: str = "output") -> Optional[dict]:
     """Validate generated file existence and size.
     
     FIX: Only check existence and non-emptiness.
@@ -418,12 +427,16 @@ def _layer_artifact_check(action: dict) -> Optional[dict]:
     if action.get("type") != "file_write":
         return None
         
-    path = action.get("path")
-    if not path or not os.path.exists(path):
-        return {"check": "artifact_exists", "passed": False, "detail": f"File not found: {path}"}
+    path = action.get("target_file") or action.get("path") or action.get("file")
+    if not path:
+        return None
         
-    if os.path.getsize(path) == 0:
-        return {"check": "artifact_not_empty", "passed": False, "detail": f"File is empty: {path}"}
+    full_path = os.path.join(output_dir, os.path.basename(path))
+    if not os.path.exists(full_path):
+        return {"check": "artifact_exists", "passed": False, "detail": f"File not found: {full_path}"}
+        
+    if os.path.getsize(full_path) == 0:
+        return {"check": "artifact_not_empty", "passed": False, "detail": f"File is empty: {full_path}"}
         
     return None
 
@@ -518,3 +531,41 @@ def _build_partial_reason(checks: list) -> str:
     failed = [c for c in checks if not c["passed"]]
     return (f"Partial success: {len(passed)} passed, {len(failed)} failed. "
             f"Failed: {', '.join(c['check'] for c in failed)}")
+
+
+def validate_project_output(state: dict) -> Tuple[bool, str]:
+    """
+    Validate the overall project output based on task type and description.
+    Returns (success, error_message).
+    """
+    core_desc = state["core_task"]["description"].lower()
+    task_output_dir = state["core_task"]["output_dir"]
+    
+    # 1. Workspace Isolation Check
+    if os.path.exists("workspace") and any(os.scandir("workspace")):
+         return False, "Validation failed: workspace/ directory contains files. Use output/ directory only."
+
+    # 2. Complex Website Validation
+    if any(kw in core_desc for kw in ["website", "multiple pages", "landing page"]):
+        if not os.path.exists(task_output_dir):
+            return False, f"Validation failed: Output directory {task_output_dir} does not exist."
+            
+        output_files = os.listdir(task_output_dir)
+        html_files = [f for f in output_files if f.endswith(".html")]
+        
+        # Check for disallowed generic filenames if specific ones were requested
+        if "output.html" in html_files and "index.html" not in html_files:
+             return False, "Validation failed: Produced generic output.html instead of index.html."
+             
+        # Check for minimum page count for "complex" requests
+        if "multiple pages" in core_desc and len(html_files) < 2:
+            return False, f"Validation failed: Task requested multiple pages but only {len(html_files)} HTML file(s) produced."
+
+    # 3. Code Project Validation
+    if any(kw in core_desc for kw in ["python", "script", "app"]) and "html" not in core_desc:
+        output_files = os.listdir(task_output_dir) if os.path.exists(task_output_dir) else []
+        code_files = [f for f in output_files if f.endswith((".py", ".js", ".sh"))]
+        if not code_files:
+            return False, "Validation failed: No code files (.py, .js, .sh) produced for a coding task."
+
+    return True, ""

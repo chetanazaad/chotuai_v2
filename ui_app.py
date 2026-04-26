@@ -152,7 +152,12 @@ class ChotuApp:
         
         # New Chat Button
         tk.Button(header, text="+ New Chat", bg=self.ACCENT_BLUE, fg=self.BG_DARK, font=self.FONT_BUTTON, 
-                  command=self._new_chat, relief="flat", padx=15).grid(row=0, column=5, padx=20)
+                  command=self._new_chat, relief="flat", padx=15).grid(row=0, column=5, padx=10)
+        
+        # Stop Button
+        self.stop_button = tk.Button(header, text="Stop", bg=self.ACCENT_RED, fg=self.FG_PRIMARY, font=self.FONT_BUTTON, 
+                                     command=self._stop_task, relief="flat", padx=15, state="disabled")
+        self.stop_button.grid(row=0, column=6, padx=10)
 
     def _build_chat_area(self):
         chat_frame = tk.Frame(self.root, bg=self.BG_DARK)
@@ -202,7 +207,7 @@ class ChotuApp:
         if self.task_runner and self.task_runner.is_alive():
             if not messagebox.askyesno("Confirm", "A task is currently running. Start a new chat anyway?"):
                 return
-            self.task_runner.stop()
+            self._stop_task()
         
         self.chat_text.configure(state="normal")
         self.chat_text.delete(1.0, tk.END)
@@ -211,7 +216,17 @@ class ChotuApp:
         self.current_output_dir = None
         self.progress["value"] = 0
         self.step_label.configure(text="Step: -/-")
+        self._set_status("Idle", self.FG_DIM)
         self._add_welcome_message()
+
+    def _stop_task(self):
+        if self.task_runner and self.task_runner.is_alive():
+            self.task_runner.stop()
+            self._append_chat("System", "Task stopped by user.", "error")
+            self._set_status("Stopped", self.ACCENT_RED)
+            self.send_button.configure(state="normal")
+            self.stop_button.configure(state="disabled")
+            self.model_combo.configure(state="readonly")
 
     def _append_chat(self, sender: str, message: str, tag: str = None):
         self.chat_text.configure(state="normal")
@@ -237,18 +252,24 @@ class ChotuApp:
         
         # 1. Pre-flight Checks
         self._set_status("Checking System...", self.ACCENT_YELLOW)
+        self._append_chat("System", "Running pre-flight checks...")
         model = self.model_var.get()
-        ok, errors = system_check.run_preflight(model)
+        ok, messages = system_check.run_preflight(model)
+        
+        for msg in messages:
+            tag = "error" if "❌" in msg else "system"
+            self._append_chat("System", f"• {msg}", tag)
         
         if not ok:
-            self._append_chat("System", "Pre-flight checks failed:", "error")
-            for err in errors:
-                self._append_chat("System", f"• {err}", "error")
+            self._append_chat("System", "CRITICAL: System requirements not fulfilled. Cannot proceed.", "error")
             self._set_status("Ready", self.FG_DIM)
             return
+        
+        self._append_chat("System", "All requirements fulfilled. Starting task...", "chotu")
 
         # 2. Start Task
         self.send_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
         self.model_combo.configure(state="disabled")
         
         is_cont = self.current_task_id is not None
@@ -298,6 +319,7 @@ class ChotuApp:
 
     def _on_task_finished(self, exit_code: int):
         self.send_button.configure(state="normal")
+        self.stop_button.configure(state="disabled")
         self.model_combo.configure(state="readonly")
         
         if exit_code == 0:

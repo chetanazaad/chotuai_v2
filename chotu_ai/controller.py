@@ -295,32 +295,13 @@ def _run_loop() -> bool:
         step = _select_next_step(state)
         if step is None:
             if _all_steps_completed(state):
-                # STEP 7 & 8: VALIDATE OUTPUT FOR COMPLEX TASKS
-                core_desc = state["core_task"]["description"].lower()
-                if any(kw in core_desc for kw in ["website", "multiple pages"]):
-                    # STEP 7: VALIDATION
-                    task_output_dir = state["core_task"]["output_dir"]
-                    
-                    if os.path.exists("workspace"):
-                        state["core_task"]["status"] = "failed"
-                        state_manager.save(state)
-                        ui_renderer.render_message("error", "Validation failed: workspace/ directory exists. Use output/ only.")
-                        return False
-
-                    output_files = os.listdir(task_output_dir) if os.path.exists(task_output_dir) else []
-                    html_files = [f for f in output_files if f.endswith(".html")]
-                    
-                    if "output.html" in html_files:
-                        state["core_task"]["status"] = "failed"
-                        state_manager.save(state)
-                        ui_renderer.render_message("error", "Validation failed: output.html created. Only index, article, contact allowed.")
-                        return False
-
-                    if len(html_files) < 3:
-                        state["core_task"]["status"] = "failed"
-                        state_manager.save(state)
-                        ui_renderer.render_message("error", f"Validation failed: Complex website task produced only {len(html_files)} files. Multi-step execution failed.")
-                        return False
+                # USE CENTRALIZED VALIDATOR
+                valid, err_msg = validator.validate_project_output(state)
+                if not valid:
+                    state["core_task"]["status"] = "failed"
+                    state_manager.save(state)
+                    ui_renderer.render_message("error", err_msg)
+                    return False
 
                 state["core_task"]["status"] = "completed"
                 state_manager.save(state)

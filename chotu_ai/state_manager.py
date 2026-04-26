@@ -50,7 +50,7 @@ def create_fresh_state(core_task: str, working_dir: Optional[str] = None) -> dic
     
     # STEP 2: GENERATE TASK ID
     task_name = sanitize_task_name(core_task)
-    timestamp = now.strftime("%Y%m%d_%H%M")
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
     task_id = f"{task_name}_{timestamp}"
     
     # STEP 3: DEFINE TASK DIRECTORY

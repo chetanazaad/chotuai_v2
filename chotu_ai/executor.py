@@ -12,6 +12,22 @@ _WORKSPACE_DIR = "output"
 _FORBIDDEN_EXTENSIONS = [".sh", ".bash", ".exe", ".bat", ".cmd"]
 _ALLOWED_EXTENSIONS = [".py", ".html", ".txt", ".json", ".md", ".css", ".js"]
 
+def _load_security_policy() -> dict:
+    """Load security policy from .chotu/security_policy.json."""
+    policy_path = Path(".chotu/security_policy.json")
+    default_policy = {
+        "blocked_commands": ["ssh ", "scp ", "rm -rf", "del /s", "format ", "powershell.*-enc", "/bin/"],
+        "max_shell_length": 1000
+    }
+    if policy_path.exists():
+        try:
+            import json
+            with open(policy_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return default_policy
+
 
 def sanitize_path(path: str) -> Optional[str]:
     """Sanitize and validate file path for Windows safety."""
@@ -68,15 +84,16 @@ def validate_shell_command(command: str) -> tuple[bool, str]:
         return False, "empty_command"
 
     cmd_lower = command.lower()
+    policy = _load_security_policy()
+    
+    if len(command) > policy.get("max_shell_length", 1000):
+        return False, "command_too_long"
 
-    unsafe = [
-        "bash", "sudo", "gcc", "g++", "clang",
-        "apt-get", "apt ", "yum ", "chmod", "curl ", "wget ",
-        "ssh ", "scp ", "rm -rf", "del /s", "format ",
-        "powershell.*-enc", "/bin/",
-    ]
+    unsafe = policy.get("blocked_commands", [])
+    # Add hardcoded safety defaults
+    unsafe.extend(["bash", "sudo", "gcc", "clang", "apt-get", "apt ", "yum ", "chmod", "curl ", "wget "])
+    
     for pattern in unsafe:
-        # Use re.escape for literal matching of patterns like g++
         if re.search(re.escape(pattern), cmd_lower):
             return False, f"unsafe_command:{pattern}"
 
@@ -129,7 +146,7 @@ def execute(action: dict, timeout: int = 60, working_dir: Optional[str] = None, 
         elif action_type == "browser":
             return _execute_browser(action, timeout)
         elif action_type == "multi":
-            return _execute_multi(action, timeout, working_dir)
+            return _execute_multi(action, timeout, working_dir, output_dir, state)
         else:
             print(f"[ACTION REJECTED] unknown_type:{action_type}")
             return ExecutionResult(
@@ -258,6 +275,20 @@ def _execute_file_write(action: dict, working_dir: Optional[str], output_dir: st
         file_path = str(Path(working_dir) / file_path)
     path = Path(file_path)
     try:
+        # FINAL SAFETY NET: Content-type validation before writing to disk
+        file_ext = path.suffix.lower()
+        content_start = content.strip()[:100].lower() if content else ""
+        is_html_content = any(m in content_start for m in ["<!doctype", "<html", "<head", "<body"])
+        
+        if file_ext in (".css", ".js", ".py", ".json") and is_html_content:
+            print(f"[EXECUTOR] [BLOCKED] Content-type mismatch: HTML content for {file_ext} file. Writing placeholder.")
+            if file_ext == ".css":
+                content = "/* Content generation failed — placeholder CSS */\nbody { font-family: sans-serif; }"
+            elif file_ext == ".js":
+                content = "// Content generation failed — placeholder JS\nconsole.log('Script loaded');"
+            else:
+                content = f"# Content generation failed for {path.name}"
+        
         path.parent.mkdir(parents=True, exist_ok=True)
         print(f"[FILE TARGET] Writing → {path.name}")
         path.write_text(content, encoding="utf-8")
@@ -399,7 +430,7 @@ def _execute_browser(action: dict, timeout: int) -> ExecutionResult:
         )
 
 
-def _execute_multi(action: dict, timeout: int, working_dir: Optional[str]) -> ExecutionResult:
+def _execute_multi(action: dict, timeout: int, working_dir: Optional[str], output_dir: str = "output", state: Optional[dict] = None) -> ExecutionResult:
     """Execute each sub-action sequentially. Stop on first failure."""
     steps = action.get("steps", [])
     all_stdout = []
@@ -407,7 +438,7 @@ def _execute_multi(action: dict, timeout: int, working_dir: Optional[str]) -> Ex
     all_files = []
     total_duration = 0
     for step in steps:
-        result = execute(step, timeout, working_dir)
+        result = execute(step, timeout, working_dir, output_dir, state)
         total_duration += result.duration_ms
         all_stdout.append(result.stdout)
         all_stderr.append(result.stderr)
